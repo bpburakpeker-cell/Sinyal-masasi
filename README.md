@@ -1,5 +1,7 @@
 # Sinyal Masası — Canlıya Alma Rehberi
 
+Uygulamanın özellik özeti için: **`/UYGULAMA.md`**
+
 Bu proje iki parçadan oluşur:
 - `src/App.jsx` — arayüz (React)
 - `api/quote.js`, `api/fx.js` — Vercel'de otomatik çalışan küçük sunucu fonksiyonları. Bunlar Yahoo Finance ve döviz kurunu **sunucu tarafında** çeker, bu yüzden tarayıcıda CORS hatası almazsın. Herhangi bir API key gerekmez.
