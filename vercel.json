@@ -1,4 +1,18 @@
 {
   "buildCommand": "vite build",
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "crons": [
+    {
+      "path": "/api/cron-refresh?job=fast",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron-refresh?job=news",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron-refresh?job=daily",
+      "schedule": "0 */12 * * *"
+    }
+  ]
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { loadUserState, saveUserState } from "./lib/persistence";
 import {
   TrendingUp, TrendingDown, Minus, RefreshCw, AlertTriangle,
   ChevronRight, Activity, Plus, Search, X, ArrowLeft,
@@ -100,15 +101,6 @@ function bisListLookup(symbol) {
     symbol: symbol.toUpperCase(), name: symbol.toUpperCase(), sector: "BIST",
   };
 }
-
-/* ────────────────────────────────────────────────────────────────
-   localStorage helpers
-   ────────────────────────────────────────────────────────────── */
-function lsGet(key, def) {
-  try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : def; }
-  catch { return def; }
-}
-function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
 
 /* ────────────────────────────────────────────────────────────────
    İndikatör Matematiği
@@ -2262,13 +2254,7 @@ function NetTargetPanel({
    Ana uygulama
    ────────────────────────────────────────────────────────────── */
 export default function SinyalMasasi() {
-  // Hisse listesi localStorage'dan
-  const [stocks, setStocks] = useState(() => {
-    const saved = lsGet("sm_stocks", null);
-    if (saved && Array.isArray(saved) && saved.length > 0) return saved;
-    return DEFAULT_STOCKS;
-  });
-
+  const [stocks, setStocks] = useState(DEFAULT_STOCKS);
   const [statusMap, setStatusMap] = useState({});
   const [dataMap, setDataMap] = useState({});
   const [errorMap, setErrorMap] = useState({});
@@ -2280,7 +2266,7 @@ export default function SinyalMasasi() {
   const [detailSymbol, setDetailSymbol] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
-  const [netTargetSettings, setNetTargetSettings] = useState(() => lsGet("sm_net_targets", {
+  const [netTargetSettings, setNetTargetSettings] = useState({
     initialPrincipal: "",
     monthlyTargetPct: "",
     monthlyTargetTl: "",
@@ -2288,15 +2274,15 @@ export default function SinyalMasasi() {
     yearlyTargetTl: "",
     monthlyCostsTl: "",
     yearlyExtraCostsTl: "",
-  }));
-  const [perfSnapshots, setPerfSnapshots] = useState(() => lsGet("sm_perf_snapshots", { months: {}, years: {} }));
-  const [monthlyHistory, setMonthlyHistory] = useState(() => lsGet("sm_monthly_history", {}));
-  const [predictionLedger, setPredictionLedger] = useState(() => lsGet("sm_prediction_ledger", {}));
-
-  // Hedef fiyatlar localStorage'dan
-  const [targets, setTargets] = useState(() => lsGet("sm_targets", {}));
-  // Portföy localStorage'dan
-  const [portfolio, setPortfolio] = useState(() => lsGet("sm_portfolio", {}));
+  });
+  const [perfSnapshots, setPerfSnapshots] = useState({ months: {}, years: {} });
+  const [monthlyHistory, setMonthlyHistory] = useState({});
+  const [predictionLedger, setPredictionLedger] = useState({});
+  const [targets, setTargets] = useState({});
+  const [portfolio, setPortfolio] = useState({});
+  const [userId, setUserId] = useState(null);
+  const [userStateReady, setUserStateReady] = useState(false);
+  const [remoteStateEnabled, setRemoteStateEnabled] = useState(false);
 
   const mounted = useRef(true);
   const refreshInFlight = useRef(false);
@@ -2304,21 +2290,76 @@ export default function SinyalMasasi() {
   const latestCompanyRef = useRef({});
   const marketContextRef = useRef(null);
   const predictionLedgerRef = useRef({});
+  const stateHydratedRef = useRef(false);
+  const saveTimeoutRef = useRef(null);
 
-  // Stocks değiştikçe kaydet
-  useEffect(() => { lsSet("sm_stocks", stocks); }, [stocks]);
-  // Targets değiştikçe kaydet
-  useEffect(() => { lsSet("sm_targets", targets); }, [targets]);
-  // Portfolio değiştikçe kaydet
-  useEffect(() => { lsSet("sm_portfolio", portfolio); }, [portfolio]);
-  useEffect(() => { lsSet("sm_net_targets", netTargetSettings); }, [netTargetSettings]);
-  useEffect(() => { lsSet("sm_perf_snapshots", perfSnapshots); }, [perfSnapshots]);
-  useEffect(() => { lsSet("sm_monthly_history", monthlyHistory); }, [monthlyHistory]);
-  useEffect(() => { lsSet("sm_prediction_ledger", predictionLedger); }, [predictionLedger]);
   useEffect(() => { latestNewsRef.current = newsMap; }, [newsMap]);
   useEffect(() => { latestCompanyRef.current = companyMap; }, [companyMap]);
   useEffect(() => { marketContextRef.current = marketContext; }, [marketContext]);
   useEffect(() => { predictionLedgerRef.current = predictionLedger; }, [predictionLedger]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadUserState(DEFAULT_STOCKS).then(({ userId: nextUserId, remote, state }) => {
+      if (cancelled || !mounted.current) return;
+      setUserId(nextUserId);
+      setRemoteStateEnabled(remote);
+      setStocks(state.stocks);
+      setTargets(state.targets);
+      setPortfolio(state.portfolio);
+      setNetTargetSettings(state.netTargetSettings);
+      setPerfSnapshots(state.perfSnapshots);
+      setMonthlyHistory(state.monthlyHistory);
+      setPredictionLedger(state.predictionLedger);
+      stateHydratedRef.current = true;
+      setUserStateReady(true);
+    }).catch(() => {
+      if (cancelled || !mounted.current) return;
+      stateHydratedRef.current = true;
+      setUserStateReady(true);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!userStateReady || !stateHydratedRef.current || !userId) return undefined;
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    const state = {
+      stocks,
+      targets,
+      portfolio,
+      netTargetSettings,
+      perfSnapshots,
+      monthlyHistory,
+      predictionLedger,
+    };
+    saveTimeoutRef.current = setTimeout(() => {
+      saveUserState(userId, state)
+        .then(() => setRemoteStateEnabled(true))
+        .catch(() => setRemoteStateEnabled(false));
+    }, 400);
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, [
+    userId,
+    userStateReady,
+    stocks,
+    targets,
+    portfolio,
+    netTargetSettings,
+    perfSnapshots,
+    monthlyHistory,
+    predictionLedger,
+  ]);
 
   const handleTargetChange = (symbol, key, value) => {
     setTargets((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), [key]: value } }));
@@ -2453,16 +2494,15 @@ export default function SinyalMasasi() {
   }, [stocks, loadStock]);
 
   useEffect(() => {
-    mounted.current = true;
+    if (!userStateReady) return undefined;
     loadAll({ includeNews: true });
-    const fastInterval = setInterval(() => loadAll({ includeNews: false }), 10 * 1000);
-    const newsInterval = setInterval(() => loadAll({ includeNews: true }), 5 * 60 * 1000);
+    const fastInterval = setInterval(() => loadAll({ includeNews: false }), 60 * 1000);
+    const newsInterval = setInterval(() => loadAll({ includeNews: true }), 15 * 60 * 1000);
     return () => {
-      mounted.current = false;
       clearInterval(fastInterval);
       clearInterval(newsInterval);
     };
-  }, [loadAll]);
+  }, [loadAll, userStateReady]);
 
   const addStock = (newStock) => {
     if (stocks.find((s) => s.symbol === newStock.symbol)) return;
@@ -2767,7 +2807,7 @@ export default function SinyalMasasi() {
 
         {lastUpdate && (
           <div className="font-mono text-[11px] text-center mt-5" style={{ color: C.faint }}>
-            Son yenileme: {lastUpdate.toLocaleTimeString("tr-TR")} · 10 sn fiyat/kur, 5 dk haber yenilenir
+            Son yenileme: {lastUpdate.toLocaleTimeString("tr-TR")} · backend snapshotları 1 dk görünüm, 15 dk haber döngüsüyle yenilenir
           </div>
         )}
       </div>
