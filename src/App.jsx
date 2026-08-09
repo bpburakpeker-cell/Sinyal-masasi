@@ -1403,6 +1403,8 @@ export default function SinyalMasasi() {
   const [portfolio, setPortfolio] = useState(() => lsGet("sm_portfolio", {}));
 
   const mounted = useRef(true);
+  const refreshInFlight = useRef(false);
+  const latestNewsRef = useRef({});
 
   // Stocks değiştikçe kaydet
   useEffect(() => { lsSet("sm_stocks", stocks); }, [stocks]);
@@ -1410,6 +1412,7 @@ export default function SinyalMasasi() {
   useEffect(() => { lsSet("sm_targets", targets); }, [targets]);
   // Portfolio değiştikçe kaydet
   useEffect(() => { lsSet("sm_portfolio", portfolio); }, [portfolio]);
+  useEffect(() => { latestNewsRef.current = newsMap; }, [newsMap]);
 
   const handleTargetChange = (symbol, key, value) => {
     setTargets((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), [key]: value } }));
@@ -1437,19 +1440,30 @@ export default function SinyalMasasi() {
     setStatusMap((m) => ({ ...m, [symbol]: "ready" }));
   }, []);
 
-  const loadStock = useCallback(async (stock) => {
+  const loadStock = useCallback(async (stock, { includeNews = true } = {}) => {
     setStatusMap((m) => ({ ...m, [stock.symbol]: "loading" }));
     setErrorMap((m) => ({ ...m, [stock.symbol]: null }));
-    setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: true }));
+    if (includeNews) setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: true }));
     try {
-      // Hisse verisi ve haberleri paralel çek
-      const [hist, newsResult] = await Promise.all([
-        fetchStockHistory(stock.yahoo),
-        fetchNews(stock.yahoo),
-      ]);
+      let hist;
+      let newsResult = latestNewsRef.current[stock.symbol] || null;
+      if (includeNews) {
+        // Hisse verisi ve haberleri paralel çek
+        [hist, newsResult] = await Promise.all([
+          fetchStockHistory(stock.yahoo),
+          fetchNews(stock.yahoo),
+        ]);
+      } else {
+        hist = await fetchStockHistory(stock.yahoo);
+      }
       if (!mounted.current) return;
-      setNewsMap((m) => ({ ...m, [stock.symbol]: newsResult }));
-      setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: false }));
+      if (includeNews) {
+        setNewsMap((m) => {
+          const next = { ...m, [stock.symbol]: newsResult };
+          latestNewsRef.current = next;
+          return next;
+        });
+      }
       packageAndStore(
         stock.symbol,
         hist,
@@ -1461,7 +1475,10 @@ export default function SinyalMasasi() {
       if (!mounted.current) return;
       setErrorMap((m) => ({ ...m, [stock.symbol]: e.message || "Veri alınamadı" }));
       setStatusMap((m) => ({ ...m, [stock.symbol]: "error" }));
-      setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: false }));
+    } finally {
+      if (includeNews && mounted.current) {
+        setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: false }));
+      }
     }
   }, [packageAndStore]);
 
@@ -1474,17 +1491,30 @@ export default function SinyalMasasi() {
     setErrorMap((m) => ({ ...m, [symbol]: null }));
   }, [stocks, packageAndStore]);
 
-  const loadAll = useCallback(() => {
-    stocks.forEach(loadStock);
-    fetchUsdTry().then((r) => mounted.current && setUsdTry(r));
-    setLastUpdate(new Date());
+  const loadAll = useCallback(async ({ includeNews = false } = {}) => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    try {
+      await Promise.all(stocks.map((stock) => loadStock(stock, { includeNews })));
+      const fxRate = await fetchUsdTry();
+      if (!mounted.current) return;
+      setUsdTry(fxRate);
+      setLastUpdate(new Date());
+    } finally {
+      refreshInFlight.current = false;
+    }
   }, [stocks, loadStock]);
 
   useEffect(() => {
     mounted.current = true;
-    loadAll();
-    const interval = setInterval(loadAll, 5 * 60 * 1000);
-    return () => { mounted.current = false; clearInterval(interval); };
+    loadAll({ includeNews: true });
+    const fastInterval = setInterval(() => loadAll({ includeNews: false }), 10 * 1000);
+    const newsInterval = setInterval(() => loadAll({ includeNews: true }), 5 * 60 * 1000);
+    return () => {
+      mounted.current = false;
+      clearInterval(fastInterval);
+      clearInterval(newsInterval);
+    };
   }, [loadAll]);
 
   const addStock = (newStock) => {
@@ -1612,7 +1642,7 @@ export default function SinyalMasasi() {
 
         {lastUpdate && (
           <div className="font-mono text-[11px] text-center mt-5" style={{ color: C.faint }}>
-            Son yenileme: {lastUpdate.toLocaleTimeString("tr-TR")} · 5 dk otomatik yenilenir
+            Son yenileme: {lastUpdate.toLocaleTimeString("tr-TR")} · 10 sn fiyat/kur, 5 dk haber yenilenir
           </div>
         )}
       </div>
