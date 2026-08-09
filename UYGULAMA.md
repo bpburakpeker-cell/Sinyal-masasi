@@ -140,7 +140,7 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
   - fiyat/kur, haber ve şirket snapshot'larını zamanlanmış iş olarak yeniler.
 
 - `api/system-status.js`
-  - snapshot tazeliği ve job sağlık durumunu raporlar.
+  - snapshot tazeliği, job sağlık durumu ve PostgreSQL bağlantı/şema hazırlığını raporlar.
 
 ## Yenileme sıklığı
 
@@ -160,6 +160,55 @@ Kullanıcı tercihleri artık kalıcı backend + PostgreSQL üstünde saklanır.
 - İlk açılışta eski `localStorage` verileri backend'e taşınır.
 - Tarayıcıda yalnızca anonim kullanıcı kimliği için `sm_user_id` tutulur.
 - Kalıcı alanlar: izlenen hisseler, hedefler, portföy, net hedef ayarları, performans snapshot'ları, aylık geçmiş ve tahmin ledger kayıtları.
+
+## PostgreSQL altyapısı
+
+- Uygulama PostgreSQL ile çalışacak şekilde hazırdır ve backend bunu aktif olarak kullanır.
+- Yönetilen sağlayıcı olarak pratik seçenekler:
+  - **Neon**
+  - **Supabase Postgres**
+  - **Vercel Postgres**
+- Bağlantı `DATABASE_URL` ortam değişkeni üzerinden yapılır.
+- Varsayılan SSL davranışı yönetilen servislerle uyumlu olacak şekilde açıktır.
+- İsteğe bağlı bağlantı ayarları:
+  - `PGSSLMODE`
+  - `PG_MAX_CONNECTIONS`
+  - `PG_IDLE_TIMEOUT_MS`
+  - `PG_CONNECT_TIMEOUT_MS`
+
+### Otomatik oluşturulan ana tablolar
+
+- `users`
+- `user_states`
+- `market_snapshots`
+- `job_runs`
+
+### Mevcut DB kullanım modeli
+
+- **Kullanıcı tercihleri ve portföy** → `user_states.state` içinde JSONB
+- **Cache / snapshot verileri** → `market_snapshots`
+- **Arka plan cron logları** → `job_runs`
+
+### DB adresi notu
+
+- Güvenlik nedeniyle gerçek PostgreSQL bağlantı adresi (`DATABASE_URL`) repo içindeki markdown dosyalarına düz metin olarak yazılmadı.
+- Daha sonra bulmak için şu yerleri kullan:
+  - Vercel → **Project Settings → Environment Variables → `DATABASE_URL`**
+  - yerel geliştirme varsa → `/home/runner/work/Sinyal-masasi/Sinyal-masasi/.env.local`
+  - örnek format → `/home/runner/work/Sinyal-masasi/Sinyal-masasi/.env.example`
+- Bu sayede bağlantı bilgisi repoya commit edilmeden korunur.
+
+## Doğrulama ve izleme
+
+- `/api/system-status`
+  - DB bağlı mı?
+  - şema hazır mı?
+  - hangi tablolar mevcut?
+  - son snapshot ve job kayıtları neler?
+- `/api/user-state?userId=test-user`
+  - kullanıcı state okuma/yazma kontrolü için kullanılabilir.
+- `/api/cron-refresh?job=fast&secret=...`
+  - fiyat/kur snapshot üretimi ve `job_runs` kaydı doğrulanabilir.
 
 ## Teknik notlar
 
