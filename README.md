@@ -2,6 +2,15 @@
 
 Uygulamanın özellik özeti için: **`/UYGULAMA.md`**
 
+## Son Vercel güncellemesi
+
+- Vercel, GitHub'daki en güncel commit'i otomatik deploy eder.
+- Son güncelleme kapsamında uygulamaya:
+  - otomatik **AL / BEKLE / SAT** hedef fiyat motoru,
+  - hisse + piyasa haberlerinden türetilen sentiment desteği,
+  - otomatik hedefleri manuel ezme ve tekrar otomatiğe dönme akışı eklendi.
+- Özelliklerin detayları için: **`/UYGULAMA.md`**
+
 Bu proje iki parçadan oluşur:
 - `src/App.jsx` — arayüz (React)
 - `api/quote.js`, `api/fx.js` — Vercel'de otomatik çalışan küçük sunucu fonksiyonları. Bunlar Yahoo Finance ve döviz kurunu **sunucu tarafında** çeker, bu yüzden tarayıcıda CORS hatası almazsın. Herhangi bir API key gerekmez.
