@@ -1,6 +1,6 @@
 # Sinyal Masası Uygulaması (Son Vercel Deploy ile Uyumlu)
 
-Sinyal Masası, BIST hisseleri için teknik göstergeler, haber akışı ve portföy takibini tek ekranda birleştiren React + Vercel uygulamasıdır. Uygulama her hisse için **AL / BEKLE / SAT** sinyali, otomatik hedef seviyeleri ve portföy bazlı net performans takibi üretir.
+Sinyal Masası, BIST hisseleri için teknik göstergeler, haber akışı ve portföy takibini tek ekranda birleştiren React + Vercel uygulamasıdır. Uygulama her hisse için **AL / BEKLE / SAT** sinyali, otomatik hedef seviyeleri ve portföy bazlı net performans takibi üretir. Bu istemci tarafı hesaplamaya ek olarak, GitHub Actions üzerinde her iş günü kapanışta çalışan ayrı bir **Python model pipeline'ı** (Trend & Momentum, Risk & Oynaklık, Göreli Güç modellerinin ensemble'ı) BIMAS/BINHO/EBEBK için sunucu tarafında üretilmiş sinyal ve model kartları sağlar.
 
 ## Güncel özellik özeti
 
@@ -23,7 +23,7 @@ Sinyal Masası, BIST hisseleri için teknik göstergeler, haber akışı ve port
 - Hazır listede olmayan semboller de özel giriş olarak eklenebilir.
 
 ### 3. Detay ekranı
-Her hisse için detay ekranı açılır ve dört sekme sunulur:
+Her hisse için detay ekranı açılır ve beş sekme sunulur:
 
 - **İndikatörler**
   - RSI (14)
@@ -35,6 +35,7 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
   - Birleşik haber etkisi
   - Birleşik sinyal skoru
   - Adaptif ağırlık dağılımı
+  - **Bu Sinyali Oluşturan Modeller** (backend pipeline verisi varsa): her model için ağırlık yüzdesi, açıklaması ve son 60 günlük isabet oranı; ayrıca güncel piyasa rejimi (trend yukarı/aşağı, yatay, yüksek oynaklık) rozeti gösterilir
 
 - **Haberler**
   - Hisseye özel haber akışı
@@ -106,6 +107,18 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
   - ay sonuna kadar gerekli günlük net tutar,
   - son 12 aya kadar aylık net performans geçmişi.
 
+### 7. Backend model pipeline (Trend / Risk / Göreli Güç)
+- İstemci tarafındaki hesaplamalara ek olarak, sunucu tarafında günlük çalışan ayrı bir **Python pipeline** üç bağımsız model üretir:
+  - **Trend & Momentum Modeli** (`technical`) — SMA/RSI/MACD/OBV tabanlı yön skoru
+  - **Risk & Oynaklık Modeli** (`volatility`) — GARCH(1,1) ile oynaklık tahmini ve piyasa rejimi tespiti (`trend_up` / `trend_down` / `sideways` / `high_volatility`)
+  - **Göreli Güç Modeli** (`relative_strength`) — hissenin sektör emsallerine (Perakende → MGROS, SOKM; Holding → DOHOL, ALARK) kıyasla 20 günlük rölatif performansı
+- Üç model skoru, tespit edilen piyasa rejimine göre değişen ağırlıklarla **ensemble** edilerek nihai `final_score` ve `AL / BEKLE / SAT` sinyaline dönüştürülür.
+- Sinyal, son 3 günün tutarlılığına bakan bir **onay filtresinden (confirmation filter)** geçtikten sonra `confirmed` olarak işaretlenir.
+- Her modelin son 60 günlük isabet oranı ayrıca hesaplanıp saklanır ve detay ekranındaki “Bu Sinyali Oluşturan Modeller” kartlarında gösterilir.
+- Şu an sadece **BIMAS, BINHO, EBEBK** için çalışır (`scripts/daily_pipeline.py` içindeki `CORE_STOCKS`).
+- Bu katman opsiyoneldir: pipeline hiç çalışmamışsa veya veri yoksa uygulama istemci tarafı hesaplamaya (bkz. bölüm 3 “İndikatörler”) sorunsuz geri döner.
+- Pipeline verisi 48 saatten eski ise dashboard'da “Model verileri … önce güncellendi, pipeline çalışmıyor olabilir” uyarı şeridi gösterilir.
+
 ## Veri kaynakları ve API uçları
 
 - `api/user-state.js`
@@ -142,12 +155,24 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
 - `api/system-status.js`
   - snapshot tazeliği, job sağlık durumu ve PostgreSQL bağlantı/şema hazırlığını raporlar.
 
+- `api/signal.js`
+  - `GET /api/signal?symbol=BIMAS`
+  - Backend pipeline'ın `final_signals` tablosundaki en güncel sinyalini, model ağırlıklarını ve her modelin isabet oranını döner.
+  - Pipeline hiç çalışmadıysa veya DB yoksa `404`/`503` döner; istemci bu durumda kendi hesapladığı sinyale geri düşer.
+
+- `api/history.js`
+  - `GET /api/history?symbol=BIMAS&days=90`
+  - `prices` tablosundan (pipeline tarafından doldurulur) geçmiş kapanış verisini döner; Yahoo'ya tekrar gitmez.
+
 ## Yenileme sıklığı
 
-- Backend cron yenilemesi:
+- Backend cron yenilemesi (Vercel, `vercel.json`):
   - fiyat ve kur snapshot'ı: **10 dakikada bir**
   - haber snapshot'ı: **30 dakikada bir**
   - şirket/fundamental snapshot'ı: **12 saatte bir**
+- Model pipeline yenilemesi (GitHub Actions, `.github/workflows/daily-pipeline.yml`):
+  - **Pazartesi–Cuma, BIST kapanışında (18:00 TRT / 15:00 UTC)** otomatik çalışır
+  - Actions sekmesinden **elle de (`workflow_dispatch`)** tetiklenebilir
 - İstemci görünümü:
   - snapshot görünümü: **1 dakikada bir**
   - haber görünümü: **15 dakikada bir**
@@ -176,26 +201,40 @@ Kullanıcı tercihleri artık kalıcı backend + PostgreSQL üstünde saklanır.
   - `PG_IDLE_TIMEOUT_MS`
   - `PG_CONNECT_TIMEOUT_MS`
 
-### Otomatik oluşturulan ana tablolar
+### Otomatik oluşturulan ana tablolar (web uygulaması)
 
 - `users`
 - `user_states`
 - `market_snapshots`
 - `job_runs`
 
+### Pipeline tabloları (`db/migrations/001_init.sql`)
+
+Model pipeline'ı için ayrı, elle uygulanan bir migration seti kullanılır (mevcut `market_snapshots` / `job_runs` tablolarına dokunmaz):
+
+- `stocks` — hisse listesi (sembol, ad, sektör, çekirdek hisse mi)
+- `prices` — günlük OHLCV fiyatları
+- `features` — hesaplanmış teknik özellikler (SMA/RSI/MACD/Bollinger/OBV/rejim/oynaklık/göreli güç)
+- `model_scores` — model bazlı ham skorlar (`technical` / `volatility` / `relative_strength`)
+- `final_signals` — ensemble sonucu final skor, sinyal, rejim, ağırlıklar, onay durumu
+- `model_performance` — model başına son 60 günlük isabet oranı
+- `pipeline_runs` — pipeline çalışma logu (başlangıç/bitiş, durum, detaylar)
+- `weights_history` — geçmiş ağırlık kayıtları
+
 ### Mevcut DB kullanım modeli
 
 - **Kullanıcı tercihleri ve portföy** → `user_states.state` içinde JSONB
 - **Cache / snapshot verileri** → `market_snapshots`
-- **Arka plan cron logları** → `job_runs`
+- **Arka plan cron logları (Vercel)** → `job_runs`
+- **Model pipeline verisi ve logu (GitHub Actions)** → `final_signals`, `model_scores`, `features`, `pipeline_runs` vb.
 
 ### DB adresi notu
 
 - Güvenlik nedeniyle gerçek PostgreSQL bağlantı adresi (`DATABASE_URL`) repo içindeki markdown dosyalarına düz metin olarak yazılmadı.
-- Daha sonra bulmak için şu yerleri kullan:
-  - Vercel → **Project Settings → Environment Variables → `DATABASE_URL`**
-  - yerel geliştirme varsa → `/home/runner/work/Sinyal-masasi/Sinyal-masasi/.env.local`
-  - örnek format → `/home/runner/work/Sinyal-masasi/Sinyal-masasi/.env.example`
+- Aynı Neon bağlantı adresi iki yerde tanımlıdır:
+  - Vercel → **Project Settings → Environment Variables → `DATABASE_URL`** (web uygulaması / API route'ları için)
+  - GitHub → **repo Settings → Secrets and variables → Actions → `DATABASE_URL`** (günlük model pipeline'ının `daily-pipeline.yml` workflow'u için; ayarlandı ve doğrulandı)
+- Yerelde geliştirirken: `.env.local` (varsa) veya örnek format için `.env.example`.
 - Bu sayede bağlantı bilgisi repoya commit edilmeden korunur.
 
 ## Doğrulama ve izleme
@@ -209,10 +248,16 @@ Kullanıcı tercihleri artık kalıcı backend + PostgreSQL üstünde saklanır.
   - kullanıcı state okuma/yazma kontrolü için kullanılabilir.
 - `/api/cron-refresh?job=fast&secret=...`
   - fiyat/kur snapshot üretimi ve `job_runs` kaydı doğrulanabilir.
+- GitHub Actions → **Actions → Sinyal Masası — Günlük Pipeline**
+  - koşum geçmişi, loglar ve elle tetikleme (`Run workflow`) buradan yapılır.
+  - başarılı bir koşumda `pipeline_runs` tablosuna `status: success` kaydı düşer; bunu `/api/signal?symbol=BIMAS` ile de doğrulayabilirsin.
+- `/api/signal?symbol=BIMAS`
+  - pipeline'ın ürettiği güncel sinyal, model ağırlıkları ve isabet oranlarını doğrulamak için kullanılabilir.
 
 ## Teknik notlar
 
 - Uygulama Vercel serverless fonksiyonları + PostgreSQL snapshot katmanı üzerinden veri çektiği için tarayıcı tarafındaki CORS sorunları azaltılır.
 - Herhangi bir API key gerektirmez.
 - Veri alınamazsa bazı hisseler için **örnek veri** ile kartı doldurma akışı vardır.
+- Model pipeline'ı GitHub Actions üzerinde, uygulamanın geri kalanından bağımsız çalışır; Actions/`checkout`/`setup-python` action'ları `v7` sürümünde tutulur (Node.js 20 deprecation uyarısını önlemek için).
 - Uygulama yatırım tavsiyesi vermez; sinyaller otomatik yorum ve skorlamaya dayanır.
