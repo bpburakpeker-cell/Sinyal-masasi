@@ -108,49 +108,62 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
 
 ## Veri kaynakları ve API uçları
 
+- `api/user-state.js`
+  - kullanıcı izleme listesi, portföy, hedefler ve tahmin geçmişini kalıcı backend üzerinde tutar.
+
 - `api/quote.js`
   - Yahoo Finance fiyat geçmişini çeker.
   - `range=1y` ve `interval=1d` kullanır.
-  - Sunucu tarafında cache uygular.
+  - Önce veritabanındaki snapshot'ı okur, gerekiyorsa sağlayıcıdan yeniler.
 
 - `api/fx.js`
   - `USD/TRY` kurunu birden fazla kaynaktan alır.
   - Kaynaklar:
     - Frankfurter
     - ER-API
+  - Sonuç veritabanı snapshot'ı olarak saklanır.
 
 - `api/news.js`
   - Yahoo Finance RSS kaynaklarından haber toplar.
   - Hisse ve piyasa haberlerini ayrı işler.
   - Başlıklardan basit sentiment skoru üretir.
+  - Haber snapshot'larını cron ile önceden doldurur.
 
 - `api/company.js`
   - Yahoo şirket özeti/fundamental verilerinden sektör, temettü, büyüme, borç ve hedef fiyat proxy alanlarını çeker.
+  - Fundamental snapshot'ları uzun TTL ile tutulur.
 
 - `api/market.js`
   - `^XU100` ve `TRY=X` üzerinden piyasa/makro proxy verilerini üretir.
 
+- `api/cron-refresh.js`
+  - fiyat/kur, haber ve şirket snapshot'larını zamanlanmış iş olarak yeniler.
+
+- `api/system-status.js`
+  - snapshot tazeliği ve job sağlık durumunu raporlar.
+
 ## Yenileme sıklığı
 
-- Fiyat ve kur verisi: **10 saniyede bir**
-- Haber verisi: **5 dakikada bir**
-- İstenirse kullanıcı manuel yenileme yapabilir.
+- Backend cron yenilemesi:
+  - fiyat ve kur snapshot'ı: **10 dakikada bir**
+  - haber snapshot'ı: **30 dakikada bir**
+  - şirket/fundamental snapshot'ı: **12 saatte bir**
+- İstemci görünümü:
+  - snapshot görünümü: **1 dakikada bir**
+  - haber görünümü: **15 dakikada bir**
+  - kullanıcı isterse manuel yenileme yapabilir.
 
 ## Kalıcılık
 
-Kullanıcı tercihleri tarayıcıda `localStorage` içinde saklanır. Kullanılan başlıca anahtarlar:
+Kullanıcı tercihleri artık kalıcı backend + PostgreSQL üstünde saklanır.
 
-- `sm_stocks`
-- `sm_targets`
-- `sm_portfolio`
-- `sm_net_targets`
-- `sm_perf_snapshots`
-- `sm_monthly_history`
-- `sm_prediction_ledger`
+- İlk açılışta eski `localStorage` verileri backend'e taşınır.
+- Tarayıcıda yalnızca anonim kullanıcı kimliği için `sm_user_id` tutulur.
+- Kalıcı alanlar: izlenen hisseler, hedefler, portföy, net hedef ayarları, performans snapshot'ları, aylık geçmiş ve tahmin ledger kayıtları.
 
 ## Teknik notlar
 
-- Uygulama Vercel serverless fonksiyonları üzerinden veri çektiği için tarayıcı tarafındaki CORS sorunları azaltılır.
+- Uygulama Vercel serverless fonksiyonları + PostgreSQL snapshot katmanı üzerinden veri çektiği için tarayıcı tarafındaki CORS sorunları azaltılır.
 - Herhangi bir API key gerektirmez.
 - Veri alınamazsa bazı hisseler için **örnek veri** ile kartı doldurma akışı vardır.
 - Uygulama yatırım tavsiyesi vermez; sinyaller otomatik yorum ve skorlamaya dayanır.

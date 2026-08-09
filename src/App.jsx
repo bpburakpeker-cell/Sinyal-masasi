@@ -2807,7 +2807,7 @@ export default function SinyalMasasi() {
 
         {lastUpdate && (
           <div className="font-mono text-[11px] text-center mt-5" style={{ color: C.faint }}>
-            Son yenileme: {lastUpdate.toLocaleTimeString("tr-TR")} · backend snapshotları 1 dk görünüm, 15 dk haber döngüsüyle yenilenir
+            Son yenileme: {lastUpdate.toLocaleTimeString("tr-TR")} · {remoteStateEnabled ? "kalıcı backend aktif" : "yerel geçiş modu"} · backend snapshotları 1 dk görünüm, 15 dk haber döngüsüyle yenilenir
           </div>
         )}
       </div>

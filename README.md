@@ -13,9 +13,10 @@ Uygulamanın özellik özeti için: **`/UYGULAMA.md`**
   - tahmin geçmişi, doğruluk oranı ve tahmin-gerçekleşen fiyat karşılaştırması eklendi.
 - Özelliklerin detayları için: **`/UYGULAMA.md`**
 
-Bu proje iki parçadan oluşur:
+Bu proje artık üç parçadan oluşur:
 - `src/App.jsx` — arayüz (React)
-- `api/quote.js`, `api/fx.js` — Vercel'de otomatik çalışan küçük sunucu fonksiyonları. Bunlar Yahoo Finance ve döviz kurunu **sunucu tarafında** çeker, bu yüzden tarayıcıda CORS hatası almazsın. Herhangi bir API key gerekmez.
+- `api/user-state.js` — kullanıcı izleme listesi, hedefler, portföy ve tahmin geçmişini kalıcı backend üstünden saklar
+- `api/quote.js`, `api/fx.js`, `api/news.js`, `api/company.js`, `api/market.js`, `api/cron-refresh.js` — veri toplama ve snapshot katmanı. Cron ile arka planda veri tazeler, istemciye hazır veri sunar.
 
 ## Gereken hesaplar (ikisi de ücretsiz, kredi kartı istemez)
 1. **GitHub** hesabı → https://github.com/signup
@@ -44,8 +45,13 @@ Bu proje iki parçadan oluşur:
 4. Vercel, `vite` projesini otomatik tanır. Ayar değiştirmene gerek yok — "Deploy" butonuna bas.
 5. 1-2 dakika içinde `sinyal-masasi-xxxx.vercel.app` gibi geçici bir adres verecek. Uygulaman orada canlı olacak.
 
-### 3) Test et
-Adresi aç, üç hissenin de veri çektiğini gör. Artık CORS/proxy sorunu olmamalı çünkü Yahoo Finance isteği artık senin kendi sunucu fonksiyonun (`/api/quote`) üzerinden, sunucudan sunucuya gidiyor.
+### 3) Ortam değişkenlerini ekle
+Vercel projesinde **Settings → Environment Variables** bölümüne en az şunları gir:
+- `DATABASE_URL` → kalıcı PostgreSQL bağlantı adresi
+- `CRON_SECRET` → `/api/cron-refresh` çağrılarını korumak için gizli anahtar
+
+### 4) Test et
+Adresi aç, üç hissenin de veri çektiğini gör. Artık istemci tarafı sadece backend API'lerini kullanır; Yahoo Finance ve diğer sağlayıcılara erişim sunucu tarafında kalır.
 
 ## Yerelde (kendi bilgisayarında) çalıştırmak istersen
 Node.js (18+) kurulu olmalı.
@@ -56,7 +62,15 @@ vercel dev
 ```
 `vercel dev` hem arayüzü hem `/api` fonksiyonlarını birlikte ayağa kaldırır (sadece `npm run dev` ile açarsan `/api` istekleri çalışmaz, çünkü o fonksiyonlar Vercel'in sunucu ortamında koşar).
 
+## Backend mimarisi notları
+- Kullanıcı verileri artık tarayıcı `localStorage` yerine `/api/user-state` + PostgreSQL üstünde tutulur. Eski `localStorage` verileri ilk açılışta backend'e taşınır.
+- Vercel cron tanımı `vercel.json` içindedir:
+  - `*/10 * * * *` → fiyat/kur snapshot
+  - `*/30 * * * *` → haber snapshot
+  - `0 */12 * * *` → şirket/fundamental snapshot
+- Snapshot'lar veritabanında tutulur; canlı route'lar önce bu snapshot'ları döndürür, gerekirse sağlayıcıdan yeniler.
+
 ## Sonradan eklenebilecekler
 - Kendi domain'ini bağlamak istersen: Vercel projesinde **Settings → Domains** kısmından domain'i ekleyip DNS ayarlarını yönlendirmen yeterli (domain'i nereden aldıysan oranın DNS panelinden).
-- Yahoo Finance'in resmi olmayan endpoint'i nadiren yapısını değiştirebilir. Böyle bir durumda `api/quote.js` içindeki URL güncellenir; istersen daha garantili (ama ücretli/kayıt gerektiren) bir sağlayıcıya da geçebiliriz.
-- Otomatik yenileme tarayıcı açıkken fiyat/kur için 10 saniyede bir, haber verisi için 5 dakikada bir çalışır; sunucu tarafında zamanlanmış görev (cron) ile arka planda veri toplamak istersen Vercel Cron Jobs eklenebilir.
+- Yahoo Finance'in resmi olmayan endpoint'i nadiren yapısını değiştirebilir. Böyle bir durumda `api/_lib/providers.js` içindeki sağlayıcı URL'leri güncellenir; istersen daha garantili (ama ücretli/kayıt gerektiren) bir sağlayıcıya da geçebiliriz.
+- İleri aşamada anonim kullanıcı kimliğini gerçek oturum açma (magic link / OAuth) ile değiştirebilirsin.
