@@ -1,4 +1,4 @@
-import { ensureSchema, hasDatabase, query } from "./db.js";
+import { ensureSchema, getDatabaseHealth, hasDatabase, query } from "./db.js";
 
 function normalizeSymbol(symbol) {
   return (symbol || "global").toUpperCase();
@@ -112,15 +112,15 @@ export async function finishJobRun(id, status, details = {}) {
 }
 
 export async function getSystemStatus() {
-  if (!hasDatabase()) {
+  const database = await getDatabaseHealth();
+  if (!database.connected) {
     return {
-      database: false,
+      database,
       snapshots: [],
       jobs: [],
     };
   }
 
-  await ensureSchema();
   const [snapshots, jobs] = await Promise.all([
     query(`
       select kind, symbol, fetched_at, expires_at, source, error
@@ -137,7 +137,7 @@ export async function getSystemStatus() {
   ]);
 
   return {
-    database: true,
+    database,
     snapshots: snapshots.rows,
     jobs: jobs.rows,
   };

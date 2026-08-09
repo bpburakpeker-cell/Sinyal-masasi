@@ -49,6 +49,17 @@ Bu proje artık üç parçadan oluşur:
 Vercel projesinde **Settings → Environment Variables** bölümüne en az şunları gir:
 - `DATABASE_URL` → kalıcı PostgreSQL bağlantı adresi
 - `CRON_SECRET` → `/api/cron-refresh` çağrılarını korumak için gizli anahtar
+- İstersen örnek değer yapısı için repo kökündeki **`/home/runner/work/Sinyal-masasi/Sinyal-masasi/.env.example`** dosyasını kullan.
+
+Desteklenen pratik PostgreSQL seçenekleri:
+- **Neon**
+- **Supabase Postgres**
+- **Vercel Postgres**
+
+Opsiyonel bağlantı ayarları:
+- `PGSSLMODE=require` → yönetilen PostgreSQL servisleri için varsayılan öneri
+- `PGSSLMODE=disable` → sadece SSL istemeyen yerel kurulumlarda
+- `PG_MAX_CONNECTIONS`, `PG_IDLE_TIMEOUT_MS`, `PG_CONNECT_TIMEOUT_MS` → serverless bağlantı davranışını ayarlamak için
 
 ### 4) Test et
 Adresi aç, üç hissenin de veri çektiğini gör. Artık istemci tarafı sadece backend API'lerini kullanır; Yahoo Finance ve diğer sağlayıcılara erişim sunucu tarafında kalır.
@@ -62,6 +73,11 @@ vercel dev
 ```
 `vercel dev` hem arayüzü hem `/api` fonksiyonlarını birlikte ayağa kaldırır (sadece `npm run dev` ile açarsan `/api` istekleri çalışmaz, çünkü o fonksiyonlar Vercel'in sunucu ortamında koşar).
 
+Yerelde başlatmadan önce:
+- `.env.example` dosyasını referans alıp `.env.local` oluştur
+- `DATABASE_URL` ve `CRON_SECRET` değerlerini doldur
+- Gerekirse yerel PostgreSQL için `PGSSLMODE=disable` kullan
+
 ## Backend mimarisi notları
 - Kullanıcı verileri artık tarayıcı `localStorage` yerine `/api/user-state` + PostgreSQL üstünde tutulur. Eski `localStorage` verileri ilk açılışta backend'e taşınır.
 - Vercel cron tanımı `vercel.json` içindedir:
@@ -69,6 +85,33 @@ vercel dev
   - `*/30 * * * *` → haber snapshot
   - `0 */12 * * *` → şirket/fundamental snapshot
 - Snapshot'lar veritabanında tutulur; canlı route'lar önce bu snapshot'ları döndürür, gerekirse sağlayıcıdan yeniler.
+- Şema ilk erişimde otomatik oluşturulur. Beklenen ana tablolar:
+  - `users`
+  - `user_states`
+  - `market_snapshots`
+  - `job_runs`
+
+## PostgreSQL doğrulama akışı
+Deploy sonrası şu kontrolleri yap:
+
+1. **DB durumu**
+   - `/api/system-status`
+   - Beklenen çıktı:
+     - `database.connected: true`
+     - `database.schemaReady: true`
+     - `database.tables` içinde `users`, `user_states`, `market_snapshots`, `job_runs`
+
+2. **Kullanıcı state okuma**
+   - `/api/user-state?userId=test-user`
+   - İlk çağrıda kullanıcıyı oluşturur ve boş state dönebilir
+
+3. **Cron test**
+   - `/api/cron-refresh?job=fast&secret=CRON_SECRET_DEGERI`
+   - Başarılı olursa snapshot ve job kayıtları oluşur
+
+4. **Tekrar sistem durumu**
+   - `/api/system-status`
+   - `snapshots` ve `jobs` listelerinde yeni kayıtlar görünmeli
 
 ## Sonradan eklenebilecekler
 - Kendi domain'ini bağlamak istersen: Vercel projesinde **Settings → Domains** kısmından domain'i ekleyip DNS ayarlarını yönlendirmen yeterli (domain'i nereden aldıysan oranın DNS panelinden).
