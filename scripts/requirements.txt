@@ -1,0 +1,5 @@
+requests
+numpy
+arch
+psycopg2-binary
+scipy

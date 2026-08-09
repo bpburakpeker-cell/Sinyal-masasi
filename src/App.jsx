@@ -28,6 +28,14 @@ const C = {
   blue: "#60A5FA",
 };
 
+/* ── Rejim etiketleri (backend pipeline'dan gelen regime alanı için) ── */
+const REGIME_LABELS = {
+  trend_up:        { label: "Trend Yukarı",    color: "green" },
+  trend_down:      { label: "Trend Aşağı",     color: "red"   },
+  sideways:        { label: "Yatay Piyasa",    color: "amber" },
+  high_volatility: { label: "Yüksek Oynaklık", color: "amber" },
+};
+
 const FONT_STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 .font-display { font-family: 'Space Grotesk', sans-serif; }
@@ -847,6 +855,32 @@ async function fetchMarketContext() {
   }
 }
 
+/* ── Backend pipeline signal (opsiyonel — yoksa null döner) ── */
+async function fetchSignal(symbol) {
+  try {
+    const r = await fetch(`/api/signal?symbol=${encodeURIComponent(symbol)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchPipelineStatus() {
+  try {
+    const r = await fetch("/api/system-status");
+    if (!r.ok) return null;
+    const j = await r.json();
+    // pipeline_runs tablosundan son çalışma bilgisi
+    const lastRun = (j.jobs || []).find((job) => job.job_name === "daily-pipeline" || job.status === "success");
+    if (!lastRun?.finished_at) return null;
+    const hours = (Date.now() - new Date(lastRun.finished_at).getTime()) / 3600000;
+    return { hoursSinceLastRun: Math.round(hours), lastRun };
+  } catch {
+    return null;
+  }
+}
+
 function generateDemoHistory(basePrice, days = 260) {
   const closes = [], dates = [], volumes = [];
   let price = basePrice;
@@ -1397,7 +1431,7 @@ function PredictionPerformancePanel({ forecast, predictionRecords = [] }) {
 /* ────────────────────────────────────────────────────────────────
    Detay sayfası
    ────────────────────────────────────────────────────────────── */
-function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, predictionRecords, portfolio, onTargetChange, onTargetReset, onPortfolioChange, onClose }) {
+function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, predictionRecords, portfolio, onTargetChange, onTargetReset, onPortfolioChange, onClose, signalData }) {
   const [btAmount, setBtAmount] = useState(10000);
   const [activeTab, setActiveTab] = useState("indicators");
 
@@ -1659,6 +1693,56 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
                   ))}
                 </div>
               </div>
+
+              {/* Backend pipeline model kartları (yalnızca DB verisi varsa) */}
+              {signalData?.models?.length > 0 && (
+                <div className="mt-5 pt-4" style={{ borderTop: `1px solid ${C.border}` }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-display text-sm font-semibold" style={{ color: C.text }}>
+                      Bu Sinyali Oluşturan Modeller
+                    </span>
+                    {signalData.regime && REGIME_LABELS[signalData.regime] && (
+                      <span
+                        className="font-mono text-[10px] px-2 py-1 rounded-md"
+                        style={{
+                          background: `rgba(${REGIME_LABELS[signalData.regime].color === "green" ? "52,211,153" : REGIME_LABELS[signalData.regime].color === "red" ? "251,91,77" : "245,166,35"},0.14)`,
+                          color: REGIME_LABELS[signalData.regime].color === "green" ? C.green : REGIME_LABELS[signalData.regime].color === "red" ? C.red : C.amber,
+                        }}
+                      >
+                        {REGIME_LABELS[signalData.regime].label}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {signalData.models.map((m) => (
+                      <div key={m.key} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="font-body text-xs font-medium" style={{ color: C.text }}>{m.label}</span>
+                          <span className="font-mono text-[11px]" style={{ color: C.amber }}>%{m.weightPct} ağırlık</span>
+                        </div>
+                        <div className="h-1 rounded-full overflow-hidden mb-2" style={{ background: C.border }}>
+                          <div className="h-full rounded-full" style={{ width: `${m.weightPct}%`, background: C.amber }} />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="font-body text-[10.5px]" style={{ color: C.faint }}>{m.description}</span>
+                          <span
+                            className="font-mono text-[11px] flex-shrink-0 ml-2"
+                            style={{ color: m.hitRatePct != null ? (m.hitRatePct >= 55 ? C.green : C.muted) : C.faint }}
+                          >
+                            {m.hitRatePct != null ? `%${m.hitRatePct} isabet` : `veri birikiyor (${m.sampleSize}/60)`}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="font-body text-[10.5px] mt-2.5" style={{ color: C.faint }}>
+                    İsabet yüzdeleri bu hissenin son 60 işlem gününde modelin yönlü sinyalleri ile gerçekleşen fiyat
+                    hareketinin karşılaştırılmasıyla hesaplanır. Küçük örneklemde (düşük &quot;veri&quot; sayısı) yüzde gürültülü olabilir.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1893,7 +1977,7 @@ function AddStockModal({ existingSymbols, onAdd, onClose }) {
 /* ────────────────────────────────────────────────────────────────
    Hisse kartı
    ────────────────────────────────────────────────────────────── */
-function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRemove, usdTry, manualTargets, resolvedTargets }) {
+function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRemove, usdTry, manualTargets, resolvedTargets, signalData }) {
   const tgt = resolvedTargets || {};
   const manual = manualTargets || {};
   const manualBuy = manual.buy != null && String(manual.buy).trim() !== "";
@@ -1983,6 +2067,12 @@ function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRe
             <div className="flex flex-col gap-1">
               <SignalBadge signal={data.signal} />
               {targetLine()}
+              {signalData?.models?.[0] && (
+                <div className="font-mono text-[10px] mt-0.5 inline-flex items-center gap-1" style={{ color: C.faint }}>
+                  <span style={{ color: C.amber }}>{signalData.models[0].short || signalData.models[0].label}</span>
+                  {signalData.models[0].hitRatePct != null && <span>· %{signalData.models[0].hitRatePct} isabet</span>}
+                </div>
+              )}
             </div>
             <button
               onClick={() => onSelect(stock.symbol)}
@@ -2278,6 +2368,8 @@ export default function SinyalMasasi() {
   const [perfSnapshots, setPerfSnapshots] = useState({ months: {}, years: {} });
   const [monthlyHistory, setMonthlyHistory] = useState({});
   const [predictionLedger, setPredictionLedger] = useState({});
+  const [signalMap, setSignalMap] = useState({});          // backend pipeline sinyalleri
+  const [pipelineStatus, setPipelineStatus] = useState(null); // bayat veri uyarısı
   const [targets, setTargets] = useState({});
   const [portfolio, setPortfolio] = useState({});
   const [userId, setUserId] = useState(null);
@@ -2496,11 +2588,27 @@ export default function SinyalMasasi() {
   useEffect(() => {
     if (!userStateReady) return undefined;
     loadAll({ includeNews: true });
+
+    // Backend pipeline sinyallerini ve sistem durumunu çek (opsiyonel, mevcut işleyişi etkilemez)
+    const loadPipelineData = () => {
+      stocks.forEach((stock) => {
+        fetchSignal(stock.symbol).then((sig) => {
+          if (sig) setSignalMap((m) => ({ ...m, [stock.symbol]: sig }));
+        });
+      });
+      fetchPipelineStatus().then((s) => {
+        if (s) setPipelineStatus(s);
+      });
+    };
+    loadPipelineData();
+    const signalInterval = setInterval(loadPipelineData, 60 * 60 * 1000); // her saat yenile
+
     const fastInterval = setInterval(() => loadAll({ includeNews: false }), 60 * 1000);
     const newsInterval = setInterval(() => loadAll({ includeNews: true }), 15 * 60 * 1000);
     return () => {
       clearInterval(fastInterval);
       clearInterval(newsInterval);
+      clearInterval(signalInterval);
     };
   }, [loadAll, userStateReady]);
 
@@ -2690,6 +2798,7 @@ export default function SinyalMasasi() {
           portfolio={portfolio}
           onPortfolioChange={handlePortfolioChange}
           onClose={() => setDetailSymbol(null)}
+          signalData={signalMap[detailSymbol] || null}
         />
       )}
 
@@ -2744,6 +2853,16 @@ export default function SinyalMasasi() {
         </div>
 
         {/* Hisse kartları */}
+        {pipelineStatus?.hoursSinceLastRun > 48 && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg mb-1"
+            style={{ background: "rgba(251,91,77,0.08)", border: `1px solid rgba(251,91,77,0.2)` }}>
+            <AlertTriangle size={13} style={{ color: C.red, flexShrink: 0 }} />
+            <span className="font-body text-[11px]" style={{ color: C.red }}>
+              Model verileri {pipelineStatus.hoursSinceLastRun >= 48 ? `${Math.round(pipelineStatus.hoursSinceLastRun / 24)} gün` : `${pipelineStatus.hoursSinceLastRun} saat`} önce güncellendi. Pipeline çalışmıyor olabilir.
+            </span>
+          </div>
+        )}
+
         <div className={`grid gap-3 ${stocks.length > 3 ? "sm:grid-cols-3 grid-cols-2" : "sm:grid-cols-3"}`}>
           {items.map(({ stock, data }) => (
             <StockCard
@@ -2759,6 +2878,7 @@ export default function SinyalMasasi() {
               usdTry={usdTry}
               manualTargets={targets[stock.symbol] || {}}
               resolvedTargets={data ? resolveDisplayedTargets(data.suggestedTargets, targets[stock.symbol] || {}) : {}}
+              signalData={signalMap[stock.symbol] || null}
             />
           ))}
 

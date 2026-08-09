@@ -1,0 +1,31 @@
+name: Sinyal Masası — Günlük Pipeline
+
+on:
+  schedule:
+    # BIST kapanışı: 18:00 TRT = 15:00 UTC, Pazartesi–Cuma
+    - cron: "0 15 * * 1-5"
+  workflow_dispatch:   # elle tetikleme
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Kodu çek
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Bağımlılıkları yükle
+        run: pip install -r scripts/requirements.txt
+
+      - name: Pipeline çalıştır
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/daily_pipeline.py
