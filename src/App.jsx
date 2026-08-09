@@ -193,8 +193,81 @@ function bollingerSeries(closes, period = 20, k = 2) {
 
 function clip(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-function indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, newsSentiment) {
-  let sRsi = 0, sMacd = 0, sMa = 0, sBoll = 0, sNews = 0;
+function mean(values, fallback = 0) {
+  const valid = values.filter((v) => Number.isFinite(v));
+  if (!valid.length) return fallback;
+  return valid.reduce((sum, v) => sum + v, 0) / valid.length;
+}
+
+function lastFinite(values, fallback = null) {
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (Number.isFinite(values[i])) return values[i];
+  }
+  return fallback;
+}
+
+function roundPrice(value) {
+  return Number(value.toFixed(2));
+}
+
+function buildAutoTargets({ closes, price, sma20, sma50, rsi, macd, bollinger, signal, stockNewsSentiment = 0, marketNewsSentiment = 0 }) {
+  const last = closes.length - 1;
+  const recentCloses = closes.slice(Math.max(0, last - 19), last + 1);
+  const recentLow = recentCloses.length ? Math.min(...recentCloses) : price;
+  const recentHigh = recentCloses.length ? Math.max(...recentCloses) : price;
+  const lowerBand = lastFinite(bollinger.lower, price * 0.94);
+  const upperBand = lastFinite(bollinger.upper, price * 1.06);
+  const ma20Last = lastFinite(sma20, price);
+  const ma50Last = lastFinite(sma50, price);
+  const supportBase = mean([lowerBand, Math.min(ma20Last, price), Math.min(ma50Last, price), recentLow], price * 0.96);
+  const resistanceBase = mean([upperBand, Math.max(ma20Last, price), Math.max(ma50Last, price), recentHigh], price * 1.04);
+
+  const bandWidth = Math.max(upperBand - lowerBand, price * 0.04);
+  const volatilityPct = clip(bandWidth / Math.max(price, 0.01), 0.04, 0.22);
+  const histNow = macd.hist[last] ?? 0;
+  const histPrev = last > 0 && macd.hist[last - 1] != null ? macd.hist[last - 1] : histNow;
+  const macdScale = Math.max(
+    ...macd.hist.slice(Math.max(0, last - 30), last + 1).filter((v) => v != null).map((v) => Math.abs(v)),
+    1e-6
+  );
+  const macdBias = clip(histNow / macdScale, -1, 1);
+  const macdTurn = clip((histNow - histPrev) / macdScale, -1, 1);
+  const stockBias = clip(stockNewsSentiment || 0, -1, 1);
+  const marketBias = clip(marketNewsSentiment || 0, -1, 1);
+  const newsBias = clip(stockBias * 0.65 + marketBias * 0.35, -1, 1);
+  const rsiBuyBias = rsi != null ? clip((35 - rsi) / 20, -0.35, 0.45) : 0;
+  const rsiSellBias = rsi != null ? clip((rsi - 65) / 20, -0.35, 0.45) : 0;
+  const signalBias = signal === "AL" ? 0.18 : signal === "SAT" ? -0.18 : 0;
+
+  let buy = supportBase + price * volatilityPct * (rsiBuyBias * 0.45 + Math.max(macdBias, 0) * 0.15 + Math.max(macdTurn, 0) * 0.15 + Math.max(newsBias, 0) * 0.15 + signalBias * 0.25);
+  let sell = resistanceBase - price * volatilityPct * (rsiSellBias * 0.45 + Math.max(-macdBias, 0) * 0.15 + Math.max(-macdTurn, 0) * 0.15 + Math.max(-newsBias, 0) * 0.15 - signalBias * 0.25);
+
+  buy = clip(buy, price * (1 - volatilityPct * 1.35), price * 0.995);
+  sell = clip(sell, price * 1.005, price * (1 + volatilityPct * 1.35));
+
+  let waitLower = Math.max(buy * 1.01, mean([supportBase, ma20Last, price], price) * 0.998);
+  let waitUpper = Math.min(sell * 0.99, mean([resistanceBase, ma20Last, price], price) * 1.002);
+
+  if (waitLower >= waitUpper) {
+    const center = clip(price, buy * 1.02, sell * 0.98);
+    const pad = Math.max(price * 0.01, bandWidth * 0.12);
+    waitLower = center - pad;
+    waitUpper = center + pad;
+  }
+
+  waitLower = clip(waitLower, buy * 1.01, sell * 0.97);
+  waitUpper = clip(waitUpper, waitLower * 1.01, sell * 0.99);
+
+  return {
+    buy: roundPrice(buy),
+    waitLower: roundPrice(waitLower),
+    waitUpper: roundPrice(waitUpper),
+    sell: roundPrice(sell),
+  };
+}
+
+function indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, stockNewsSentiment, marketNewsSentiment) {
+  let sRsi = 0, sMacd = 0, sMa = 0, sBoll = 0, sStockNews = 0, sMarketNews = 0;
   if (rsi[i] != null) sRsi = clip(-(rsi[i] - 50) / 35, -1, 1);
   if (macd.hist[i] != null) {
     const window = macd.hist.slice(Math.max(0, i - 30), i + 1).filter((v) => v != null).map(Math.abs);
@@ -215,21 +288,24 @@ function indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, newsSen
       sBoll = clip(-(pos - 0.5) * 2, -1, 1); // lower=AL, upper=SAT
     }
   }
-  // Haber sentimenti statik (son analiz anında): aynı değer tüm seriye uygulanır
-  sNews = clip(newsSentiment || 0, -1, 1);
-  return { sRsi, sMacd, sMa, sBoll, sNews };
+  sStockNews = clip(stockNewsSentiment || 0, -1, 1);
+  sMarketNews = clip(marketNewsSentiment || 0, -1, 1);
+  return { sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews };
 }
 
-function learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, newsSentiment = 0) {
-  const edges = { rsi: [], macd: [], ma: [], boll: [], news: [] };
+function learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, stockNewsSentiment = 0, marketNewsSentiment = 0) {
+  const edges = { rsi: [], macd: [], ma: [], boll: [], stockNews: [], marketNews: [] };
   for (let i = warmup; i < closes.length - 1; i++) {
-    const { sRsi, sMacd, sMa, sBoll, sNews } = indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, newsSentiment);
+    const { sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews } = indicatorSignals(
+      i, closes, sma20, sma50, rsi, macd, bollinger, stockNewsSentiment, marketNewsSentiment
+    );
     const nextRet = (closes[i + 1] - closes[i]) / closes[i];
     edges.rsi.push([sRsi, nextRet]);
     edges.macd.push([sMacd, nextRet]);
     edges.ma.push([sMa, nextRet]);
     edges.boll.push([sBoll, nextRet]);
-    edges.news.push([sNews, nextRet]);
+    edges.stockNews.push([sStockNews, nextRet]);
+    edges.marketNews.push([sMarketNews, nextRet]);
   }
   function edgeScore(pairs) {
     const pos = pairs.filter((p) => p[0] > 0.15).map((p) => p[1]);
@@ -240,16 +316,21 @@ function learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, newsSe
   }
   const eR = edgeScore(edges.rsi), eM = edgeScore(edges.macd),
         eA = edgeScore(edges.ma), eB = edgeScore(edges.boll),
-        eN = edgeScore(edges.news);
-  const total = eR + eM + eA + eB + eN || 1;
-  return { wRsi: eR / total, wMacd: eM / total, wMa: eA / total, wBoll: eB / total, wNews: eN / total };
+        eSN = edgeScore(edges.stockNews), eMN = edgeScore(edges.marketNews);
+  const total = eR + eM + eA + eB + eSN + eMN || 1;
+  return {
+    wRsi: eR / total, wMacd: eM / total, wMa: eA / total, wBoll: eB / total,
+    wStockNews: eSN / total, wMarketNews: eMN / total,
+  };
 }
 
-function scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, newsSentiment = 0) {
+function scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, stockNewsSentiment = 0, marketNewsSentiment = 0) {
   return closes.map((_, i) => {
-    const { sRsi, sMacd, sMa, sBoll, sNews } = indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, newsSentiment);
+    const { sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews } = indicatorSignals(
+      i, closes, sma20, sma50, rsi, macd, bollinger, stockNewsSentiment, marketNewsSentiment
+    );
     const raw = weights.wRsi * sRsi + weights.wMacd * sMacd + weights.wMa * sMa +
-                weights.wBoll * sBoll + weights.wNews * sNews;
+                weights.wBoll * sBoll + weights.wStockNews * sStockNews + weights.wMarketNews * sMarketNews;
     return Math.round(clip(raw * 100, -100, 100));
   });
 }
@@ -310,9 +391,9 @@ async function fetchUsdTry() {
 async function fetchNews(yahooSymbol) {
   try {
     const r = await fetch(`/api/news?symbol=${encodeURIComponent(yahooSymbol)}`);
-    if (!r.ok) return { items: [], avgSentiment: 0 };
+    if (!r.ok) return { items: [], avgSentiment: 0, market: { items: [], avgSentiment: 0 }, combinedSentiment: 0 };
     return await r.json();
-  } catch { return { items: [], avgSentiment: 0 }; }
+  } catch { return { items: [], avgSentiment: 0, market: { items: [], avgSentiment: 0 }, combinedSentiment: 0 }; }
 }
 
 function generateDemoHistory(basePrice, days = 260) {
@@ -330,7 +411,7 @@ function generateDemoHistory(basePrice, days = 260) {
 /* ────────────────────────────────────────────────────────────────
    packageHistory — tüm indikatörleri hesapla
    ────────────────────────────────────────────────────────────── */
-function packageHistory(hist, newsSentiment = 0) {
+function packageHistory(hist, stockNewsSentiment = 0, marketNewsSentiment = 0) {
   const { closes, dates } = hist;
   const sma20 = smaSeries(closes, 20);
   const sma50 = smaSeries(closes, 50);
@@ -338,8 +419,8 @@ function packageHistory(hist, newsSentiment = 0) {
   const macd = macdSeries(closes);
   const bollinger = bollingerSeries(closes, 20, 2);
   const warmup = 50;
-  const weights = learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, newsSentiment);
-  const scores = scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, newsSentiment);
+  const weights = learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, stockNewsSentiment, marketNewsSentiment);
+  const scores = scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, stockNewsSentiment, marketNewsSentiment);
   const last = closes.length - 1;
   const price = closes[last];
   const prevClose = hist.prevClose ?? closes[last - 1];
@@ -349,14 +430,23 @@ function packageHistory(hist, newsSentiment = 0) {
     ? (closes[last] - bollinger.lower[last]) / (bollinger.upper[last] - bollinger.lower[last])
     : 0.5;
   const bollLabel = bollPos > 0.8 ? "Üst banda yakın" : bollPos < 0.2 ? "Alt banda yakın" : "Orta bant yakın";
+  const signal = signalFromScore(scores[last]);
+  const combinedNewsSentiment = clip(stockNewsSentiment * 0.7 + marketNewsSentiment * 0.3, -1, 1);
+  const suggestedTargets = buildAutoTargets({
+    closes, price, sma20, sma50, rsi: rsi[last], macd, bollinger, signal,
+    stockNewsSentiment, marketNewsSentiment,
+  });
   return {
     closes, dates, sma20, sma50, rsi: rsi[last], rsiSeries: rsi,
     macdHist: macd.hist[last], macd,
     bollinger, bollPos, bollLabel,
     score: scores[last], scoreSeries: scores,
-    signal: signalFromScore(scores[last]),
+    signal,
     price, changePct, maTrend, weights, warmup,
-    newsSentiment,
+    newsSentiment: combinedNewsSentiment,
+    stockNewsSentiment,
+    marketNewsSentiment,
+    suggestedTargets,
   };
 }
 
@@ -437,35 +527,68 @@ function IndicatorBar({ label, value, sub, barPct, color, extra }) {
   );
 }
 
+function resolveDisplayedTargets(suggestedTargets = {}, manualTargets = {}) {
+  const keys = ["buy", "waitLower", "waitUpper", "sell"];
+  return keys.reduce((acc, key) => {
+    const manualValue = manualTargets?.[key];
+    const suggestedValue = suggestedTargets?.[key];
+    acc[key] = manualValue != null && String(manualValue).trim() !== ""
+      ? manualValue
+      : (suggestedValue != null ? suggestedValue.toFixed(2) : "");
+    return acc;
+  }, {});
+}
+
 /* ────────────────────────────────────────────────────────────────
    Hedef fiyat bileşeni (düzenlenebilir)
    ────────────────────────────────────────────────────────────── */
-function PriceTarget({ label, color, bg, value, onChange, currentPrice }) {
+function PriceTarget({ label, color, bg, value, suggestedValue, isManual, onChange, onReset, currentPrice, hitMode }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
   const inputRef = useRef(null);
 
   const handleEdit = () => { setDraft(value || ""); setEditing(true); };
   const handleSave = () => {
+    if (String(draft).trim() === "") {
+      onReset?.();
+      setEditing(false);
+      return;
+    }
     const n = parseFloat(draft);
     if (!isNaN(n) && n > 0) onChange(n.toFixed(2));
     setEditing(false);
   };
 
   useEffect(() => { if (editing && inputRef.current) inputRef.current.focus(); }, [editing]);
+  useEffect(() => { if (!editing) setDraft(value || ""); }, [value, editing]);
 
   const hit = value && currentPrice
-    ? (label === "AL" ? currentPrice >= parseFloat(value)
-      : label === "SAT" ? currentPrice <= parseFloat(value)
+    ? (hitMode === "buy" ? currentPrice >= parseFloat(value)
+      : hitMode === "sell" ? currentPrice <= parseFloat(value)
       : false)
     : false;
 
   return (
     <div className="rounded-lg p-3 mb-2" style={{ background: bg, border: `1px solid ${color}33` }}>
       <div className="flex items-center justify-between mb-1">
-        <span className="font-mono text-xs font-semibold" style={{ color }}>{label}</span>
-        {hit && <span className="font-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: color + "33", color }}>⚡ HEDEF</span>}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-mono text-xs font-semibold" style={{ color }}>{label}</span>
+          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: color + "22", color }}>
+            {isManual ? "MANUEL" : "OTOMATİK"}
+          </span>
+          {hit && <span className="font-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: color + "33", color }}>⚡ HEDEF</span>}
+        </div>
+        {isManual && !editing && (
+          <button onClick={onReset} className="sm-focus p-1 rounded hover:opacity-80" style={{ color: C.faint }}>
+            <X size={12} />
+          </button>
+        )}
       </div>
+      {!editing && suggestedValue && (
+        <div className="font-body text-[10px] mb-2" style={{ color: C.faint }}>
+          Otomatik öneri: {suggestedValue} TL
+        </div>
+      )}
       {editing ? (
         <div className="flex items-center gap-1.5">
           <input
@@ -505,15 +628,18 @@ function NewsPanel({ news, loading }) {
       <RefreshCw size={12} className="animate-spin" /> Haberler yükleniyor…
     </div>
   );
-  if (!news || !news.items?.length) return (
+  if (!news || (!news.items?.length && !news.market?.items?.length)) return (
     <div className="font-body text-xs py-3" style={{ color: C.faint }}>
-      Bu hisse için güncel haber bulunamadı.
+      Bu hisse ve piyasa için güncel haber bulunamadı.
     </div>
   );
 
   const sent = news.avgSentiment;
   const sentColor = sent > 0.1 ? C.green : sent < -0.1 ? C.red : C.amber;
   const sentLabel = sent > 0.1 ? "Pozitif" : sent < -0.1 ? "Negatif" : "Nötr";
+  const marketSent = news.market?.avgSentiment ?? 0;
+  const marketColor = marketSent > 0.1 ? C.green : marketSent < -0.1 ? C.red : C.amber;
+  const marketLabel = marketSent > 0.1 ? "Pozitif" : marketSent < -0.1 ? "Negatif" : "Nötr";
 
   function timeAgo(pubDate) {
     if (!pubDate) return "";
@@ -526,14 +652,18 @@ function NewsPanel({ news, loading }) {
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
         <span className="font-mono text-xs px-2 py-0.5 rounded-md font-semibold"
           style={{ background: sentColor + "22", color: sentColor }}>
-          {sentLabel} {sent > 0 ? "+" : ""}{sent.toFixed(2)}
+          Hisse: {sentLabel} {sent > 0 ? "+" : ""}{sent.toFixed(2)}
         </span>
-        <span className="font-body text-[11px]" style={{ color: C.faint }}>Ortalama haber sentimenti</span>
+        <span className="font-mono text-xs px-2 py-0.5 rounded-md font-semibold"
+          style={{ background: marketColor + "22", color: marketColor }}>
+          Piyasa: {marketLabel} {marketSent > 0 ? "+" : ""}{marketSent.toFixed(2)}
+        </span>
+        <span className="font-body text-[11px]" style={{ color: C.faint }}>Hisse ve borsa haber özetleri</span>
       </div>
-      <div className="space-y-2">
+      <div className="space-y-2 mb-4">
         {news.items.map((item, idx) => {
           const sc = item.sentiment;
           const ic = sc > 0.1 ? C.green : sc < -0.1 ? C.red : C.amber;
@@ -554,6 +684,32 @@ function NewsPanel({ news, loading }) {
           );
         })}
       </div>
+      {!!news.market?.items?.length && (
+        <div>
+          <div className="font-body text-[11px] mb-2" style={{ color: C.faint }}>Genel borsa haberleri</div>
+          <div className="space-y-2">
+            {news.market.items.map((item, idx) => {
+              const sc = item.sentiment;
+              const ic = sc > 0.1 ? C.green : sc < -0.1 ? C.red : C.amber;
+              return (
+                <div key={`market-${idx}`} className="rounded-lg p-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-body text-xs leading-snug" style={{ color: C.text }}>{item.title}</p>
+                    <span className="font-mono text-[10px] shrink-0 px-1 py-0.5 rounded"
+                      style={{ background: ic + "22", color: ic }}>
+                      {sc > 0 ? "+" : ""}{sc.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    {item.source && <span className="font-body text-[10px]" style={{ color: C.faint }}>{item.source}</span>}
+                    <span className="font-body text-[10px]" style={{ color: C.faint }}>{timeAgo(item.pubDate)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -561,7 +717,7 @@ function NewsPanel({ news, loading }) {
 /* ────────────────────────────────────────────────────────────────
    Detay sayfası
    ────────────────────────────────────────────────────────────── */
-function DetailPage({ stock, data, usdTry, news, newsLoading, targets, onTargetChange, portfolio, onPortfolioChange, onClose }) {
+function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, onTargetChange, onTargetReset, portfolio, onPortfolioChange, onClose }) {
   const [btAmount, setBtAmount] = useState(10000);
   const [activeTab, setActiveTab] = useState("indicators");
 
@@ -579,7 +735,12 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, targets, onTargetC
     { id: "backtest", label: "Simülasyon" },
   ];
 
-  const tgt = targets[stock.symbol] || {};
+  const tgt = resolvedTargets || {};
+  const manual = manualTargets || {};
+  const manualBuy = manual.buy != null && String(manual.buy).trim() !== "";
+  const manualWaitLower = manual.waitLower != null && String(manual.waitLower).trim() !== "";
+  const manualWaitUpper = manual.waitUpper != null && String(manual.waitUpper).trim() !== "";
+  const manualSell = manual.sell != null && String(manual.sell).trim() !== "";
   const pf = portfolio[stock.symbol] || { lots: "", cost: "" };
 
   const pfPnl = pf.lots && pf.cost
@@ -645,15 +806,33 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, targets, onTargetC
               color={C.green}
               bg="rgba(52,211,153,0.06)"
               value={tgt.buy}
+              suggestedValue={data.suggestedTargets?.buy?.toFixed(2)}
+              isManual={manualBuy}
               onChange={(v) => onTargetChange(stock.symbol, "buy", v)}
+              onReset={() => onTargetReset(stock.symbol, "buy")}
               currentPrice={data.price}
+              hitMode="buy"
+            />
+            <PriceTarget
+              label="BEKLE (alt)"
+              color={C.amber}
+              bg="rgba(245,166,35,0.06)"
+              value={tgt.waitLower}
+              suggestedValue={data.suggestedTargets?.waitLower?.toFixed(2)}
+              isManual={manualWaitLower}
+              onChange={(v) => onTargetChange(stock.symbol, "waitLower", v)}
+              onReset={() => onTargetReset(stock.symbol, "waitLower")}
+              currentPrice={null}
             />
             <PriceTarget
               label="BEKLE (üst)"
               color={C.amber}
               bg="rgba(245,166,35,0.06)"
               value={tgt.waitUpper}
+              suggestedValue={data.suggestedTargets?.waitUpper?.toFixed(2)}
+              isManual={manualWaitUpper}
               onChange={(v) => onTargetChange(stock.symbol, "waitUpper", v)}
+              onReset={() => onTargetReset(stock.symbol, "waitUpper")}
               currentPrice={null}
             />
             <PriceTarget
@@ -661,12 +840,16 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, targets, onTargetC
               color={C.red}
               bg="rgba(251,91,77,0.06)"
               value={tgt.sell}
+              suggestedValue={data.suggestedTargets?.sell?.toFixed(2)}
+              isManual={manualSell}
               onChange={(v) => onTargetChange(stock.symbol, "sell", v)}
+              onReset={() => onTargetReset(stock.symbol, "sell")}
               currentPrice={data.price}
+              hitMode="sell"
             />
           </div>
           <p className="font-body text-[10px] mt-2" style={{ color: C.faint }}>
-            ✏ Fiyata tıklayarak düzenle · Enter veya ✓ ile kaydet
+            ✏ Fiyata tıklayarak düzenle · Boş kaydedersen otomatik öneriye dönersin
           </p>
         </div>
 
@@ -723,9 +906,23 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, targets, onTargetC
                 color={data.bollPos > 0.8 ? C.red : data.bollPos < 0.2 ? C.green : C.amber}
               />
               <IndicatorBar
-                label="Haber Sentimenti"
+                label="Hisse Haber Sentimenti"
+                value={data.stockNewsSentiment > 0 ? `+${data.stockNewsSentiment.toFixed(2)}` : data.stockNewsSentiment.toFixed(2)}
+                sub={data.stockNewsSentiment > 0.1 ? "Hisse haberleri genel olarak olumlu" : data.stockNewsSentiment < -0.1 ? "Hisse haberleri genel olarak olumsuz" : "Hisse haberleri nötr"}
+                barPct={50 + data.stockNewsSentiment * 50}
+                color={data.stockNewsSentiment > 0.1 ? C.green : data.stockNewsSentiment < -0.1 ? C.red : C.amber}
+              />
+              <IndicatorBar
+                label="Piyasa Haber Sentimenti"
+                value={data.marketNewsSentiment > 0 ? `+${data.marketNewsSentiment.toFixed(2)}` : data.marketNewsSentiment.toFixed(2)}
+                sub={data.marketNewsSentiment > 0.1 ? "Borsa haber akışı olumlu" : data.marketNewsSentiment < -0.1 ? "Borsa haber akışı baskılı" : "Borsa haber akışı nötr"}
+                barPct={50 + data.marketNewsSentiment * 50}
+                color={data.marketNewsSentiment > 0.1 ? C.green : data.marketNewsSentiment < -0.1 ? C.red : C.amber}
+              />
+              <IndicatorBar
+                label="Birleşik Haber Etkisi"
                 value={data.newsSentiment > 0 ? `+${data.newsSentiment.toFixed(2)}` : data.newsSentiment.toFixed(2)}
-                sub={data.newsSentiment > 0.1 ? "Haberler genel olarak olumlu" : data.newsSentiment < -0.1 ? "Haberler genel olarak olumsuz" : "Haberler nötr"}
+                sub={data.newsSentiment > 0.1 ? "Hedefler için haber desteği pozitif" : data.newsSentiment < -0.1 ? "Hedefler için haber baskısı var" : "Hedefler için haber etkisi dengeli"}
                 barPct={50 + data.newsSentiment * 50}
                 color={data.newsSentiment > 0.1 ? C.green : data.newsSentiment < -0.1 ? C.red : C.amber}
               />
@@ -754,7 +951,8 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, targets, onTargetC
                     ["MACD", data.weights.wMacd],
                     ["MA", data.weights.wMa],
                     ["Bollinger", data.weights.wBoll],
-                    ["Haber", data.weights.wNews],
+                    ["Hisse Haber", data.weights.wStockNews],
+                    ["Piyasa Haber", data.weights.wMarketNews],
                   ].map(([lbl, w]) => (
                     <span key={lbl} className="font-mono text-[11px] px-2 py-0.5 rounded"
                       style={{ background: C.panelAlt, color: C.muted }}>
@@ -990,19 +1188,22 @@ function AddStockModal({ existingSymbols, onAdd, onClose }) {
 /* ────────────────────────────────────────────────────────────────
    Hisse kartı
    ────────────────────────────────────────────────────────────── */
-function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRemove, usdTry, targets }) {
-  const tgt = targets[stock.symbol] || {};
+function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRemove, usdTry, manualTargets, resolvedTargets }) {
+  const tgt = resolvedTargets || {};
+  const manual = manualTargets || {};
+  const manualBuy = manual.buy != null && String(manual.buy).trim() !== "";
+  const manualSell = manual.sell != null && String(manual.sell).trim() !== "";
 
   const targetLine = () => {
     if (!data) return null;
     if (data.signal === "AL" && tgt.buy) {
-      return <span className="font-mono text-[11px]" style={{ color: C.green }}>Alım hedefi: {tgt.buy} TL</span>;
+      return <span className="font-mono text-[11px]" style={{ color: C.green }}>Alım hedefi{manualBuy ? " (manuel)" : ""}: {tgt.buy} TL</span>;
     }
-    if (data.signal === "BEKLE" && tgt.waitUpper) {
-      return <span className="font-mono text-[11px]" style={{ color: C.amber }}>Bekle ≤ {tgt.waitUpper} TL</span>;
+    if (data.signal === "BEKLE" && tgt.waitLower && tgt.waitUpper) {
+      return <span className="font-mono text-[11px]" style={{ color: C.amber }}>Bekle bandı: {tgt.waitLower}–{tgt.waitUpper} TL</span>;
     }
     if (data.signal === "SAT" && tgt.sell) {
-      return <span className="font-mono text-[11px]" style={{ color: C.red }}>Satış hedefi: {tgt.sell} TL</span>;
+      return <span className="font-mono text-[11px]" style={{ color: C.red }}>Satış hedefi{manualSell ? " (manuel)" : ""}: {tgt.sell} TL</span>;
     }
     return null;
   };
@@ -1214,29 +1415,32 @@ export default function SinyalMasasi() {
     setTargets((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), [key]: value } }));
   };
 
+  const handleTargetReset = (symbol, key) => {
+    setTargets((prev) => {
+      const nextSymbolTargets = { ...(prev[symbol] || {}) };
+      delete nextSymbolTargets[key];
+      const next = { ...prev };
+      if (Object.keys(nextSymbolTargets).length) next[symbol] = nextSymbolTargets;
+      else delete next[symbol];
+      return next;
+    });
+  };
+
   const handlePortfolioChange = (symbol, key, value) => {
     setPortfolio((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), [key]: value } }));
   };
 
-  const packageAndStore = useCallback((symbol, hist, newsSentiment = 0, isDemo = false) => {
-    const packaged = { ...packageHistory(hist, newsSentiment), isDemo };
+  const packageAndStore = useCallback((symbol, hist, stockNewsSentiment = 0, marketNewsSentiment = 0, isDemo = false) => {
+    const packaged = { ...packageHistory(hist, stockNewsSentiment, marketNewsSentiment), isDemo };
     if (!mounted.current) return;
     setDataMap((m) => ({ ...m, [symbol]: packaged }));
     setStatusMap((m) => ({ ...m, [symbol]: "ready" }));
   }, []);
 
-  const loadNews = useCallback(async (stock) => {
-    setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: true }));
-    const result = await fetchNews(stock.yahoo);
-    if (!mounted.current) return;
-    setNewsMap((m) => ({ ...m, [stock.symbol]: result }));
-    setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: false }));
-    return result?.avgSentiment || 0;
-  }, []);
-
   const loadStock = useCallback(async (stock) => {
     setStatusMap((m) => ({ ...m, [stock.symbol]: "loading" }));
     setErrorMap((m) => ({ ...m, [stock.symbol]: null }));
+    setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: true }));
     try {
       // Hisse verisi ve haberleri paralel çek
       const [hist, newsResult] = await Promise.all([
@@ -1246,11 +1450,18 @@ export default function SinyalMasasi() {
       if (!mounted.current) return;
       setNewsMap((m) => ({ ...m, [stock.symbol]: newsResult }));
       setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: false }));
-      packageAndStore(stock.symbol, hist, newsResult?.avgSentiment || 0, false);
+      packageAndStore(
+        stock.symbol,
+        hist,
+        newsResult?.avgSentiment || 0,
+        newsResult?.market?.avgSentiment || 0,
+        false
+      );
     } catch (e) {
       if (!mounted.current) return;
       setErrorMap((m) => ({ ...m, [stock.symbol]: e.message || "Veri alınamadı" }));
       setStatusMap((m) => ({ ...m, [stock.symbol]: "error" }));
+      setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: false }));
     }
   }, [packageAndStore]);
 
@@ -1259,7 +1470,7 @@ export default function SinyalMasasi() {
     const basePrices = { BIMAS: 490, BINHO: 9.5, EBEBK: 60 };
     const base = basePrices[symbol] || 100;
     const hist = generateDemoHistory(base);
-    packageAndStore(symbol, hist, 0, true);
+    packageAndStore(symbol, hist, 0, 0, true);
     setErrorMap((m) => ({ ...m, [symbol]: null }));
   }, [stocks, packageAndStore]);
 
@@ -1291,6 +1502,8 @@ export default function SinyalMasasi() {
 
   const items = stocks.map((stock) => ({ stock, data: dataMap[stock.symbol] }));
   const detailItem = detailSymbol ? items.find((it) => it.stock.symbol === detailSymbol) : null;
+  const detailManualTargets = detailSymbol ? (targets[detailSymbol] || {}) : {};
+  const detailResolvedTargets = detailItem?.data ? resolveDisplayedTargets(detailItem.data.suggestedTargets, detailManualTargets) : {};
 
   return (
     <div className="min-h-screen font-body" style={{ background: C.bg }}>
@@ -1304,8 +1517,10 @@ export default function SinyalMasasi() {
           usdTry={usdTry}
           news={newsMap[detailSymbol]}
           newsLoading={newsLoadingMap[detailSymbol]}
-          targets={targets}
+          manualTargets={detailManualTargets}
+          resolvedTargets={detailResolvedTargets}
           onTargetChange={handleTargetChange}
+          onTargetReset={handleTargetReset}
           portfolio={portfolio}
           onPortfolioChange={handlePortfolioChange}
           onClose={() => setDetailSymbol(null)}
@@ -1376,7 +1591,8 @@ export default function SinyalMasasi() {
               onSelect={setDetailSymbol}
               onRemove={removeStock}
               usdTry={usdTry}
-              targets={targets}
+              manualTargets={targets[stock.symbol] || {}}
+              resolvedTargets={data ? resolveDisplayedTargets(data.suggestedTargets, targets[stock.symbol] || {}) : {}}
             />
           ))}
 
