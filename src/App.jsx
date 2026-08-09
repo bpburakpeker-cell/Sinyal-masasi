@@ -2810,6 +2810,25 @@ export default function SinyalMasasi() {
             Son yenileme: {lastUpdate.toLocaleTimeString("tr-TR")} · {remoteStateEnabled ? "kalıcı backend aktif" : "yerel geçiş modu"} · backend snapshotları 1 dk görünüm, 15 dk haber döngüsüyle yenilenir
           </div>
         )}
+
+        <div className="flex justify-center gap-3 mt-4 mb-6">
+          <a
+            href="/UYGULAMA.md"
+            download="UYGULAMA.md"
+            className="font-mono text-[11px] px-3 py-1 rounded"
+            style={{ color: C.amber, border: `1px solid ${C.border}`, background: C.panel }}
+          >
+            ⬇ UYGULAMA.md
+          </a>
+          <a
+            href="/README.md"
+            download="README.md"
+            className="font-mono text-[11px] px-3 py-1 rounded"
+            style={{ color: C.muted, border: `1px solid ${C.border}`, background: C.panel }}
+          >
+            ⬇ README.md
+          </a>
+        </div>
       </div>
     </div>
   );
