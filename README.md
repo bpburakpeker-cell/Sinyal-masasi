@@ -2,6 +2,15 @@
 
 Uygulamanın özellik özeti için: **`/UYGULAMA.md`**
 
+## Son Vercel güncellemesi
+
+- Vercel, GitHub'daki en güncel commit'i otomatik deploy eder.
+- Son güncelleme kapsamında uygulamaya:
+  - otomatik **AL / BEKLE / SAT** hedef fiyat motoru,
+  - hisse + piyasa haberlerinden türetilen sentiment desteği,
+  - otomatik hedefleri manuel ezme ve tekrar otomatiğe dönme akışı eklendi.
+- Özelliklerin detayları için: **`/UYGULAMA.md`**
+
 Bu proje iki parçadan oluşur:
 - `src/App.jsx` — arayüz (React)
 - `api/quote.js`, `api/fx.js` — Vercel'de otomatik çalışan küçük sunucu fonksiyonları. Bunlar Yahoo Finance ve döviz kurunu **sunucu tarafında** çeker, bu yüzden tarayıcıda CORS hatası almazsın. Herhangi bir API key gerekmez.
@@ -48,4 +57,4 @@ vercel dev
 ## Sonradan eklenebilecekler
 - Kendi domain'ini bağlamak istersen: Vercel projesinde **Settings → Domains** kısmından domain'i ekleyip DNS ayarlarını yönlendirmen yeterli (domain'i nereden aldıysan oranın DNS panelinden).
 - Yahoo Finance'in resmi olmayan endpoint'i nadiren yapısını değiştirebilir. Böyle bir durumda `api/quote.js` içindeki URL güncellenir; istersen daha garantili (ama ücretli/kayıt gerektiren) bir sağlayıcıya da geçebiliriz.
-- Otomatik yenileme şu an tarayıcı açıkken 5 dakikada bir çalışıyor; sunucu tarafında zamanlanmış görev (cron) ile arka planda veri toplamak istersen Vercel Cron Jobs eklenebilir.
+- Otomatik yenileme tarayıcı açıkken fiyat/kur için 10 saniyede bir, haber verisi için 5 dakikada bir çalışır; sunucu tarafında zamanlanmış görev (cron) ile arka planda veri toplamak istersen Vercel Cron Jobs eklenebilir.
