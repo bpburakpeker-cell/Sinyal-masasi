@@ -210,6 +210,46 @@ function roundPrice(value) {
   return Number(value.toFixed(2));
 }
 
+function toNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parsePositiveNumber(value) {
+  const n = toNumber(value);
+  return n != null && n >= 0 ? n : null;
+}
+
+function money(v) {
+  return `${(v || 0).toFixed(2)} TL`;
+}
+
+function signedPct(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+}
+
+function signedMoney(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${v >= 0 ? "+" : ""}${v.toFixed(2)} TL`;
+}
+
+function monthKeyFromDate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function yearKeyFromDate(date = new Date()) {
+  return String(date.getFullYear());
+}
+
+function monthLabel(monthKey) {
+  const [y, m] = monthKey.split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return d.toLocaleDateString("tr-TR", { month: "short" });
+}
+
 function buildAutoTargets({ closes, price, sma20, sma50, rsi, macd, bollinger, signal, stockNewsSentiment = 0, marketNewsSentiment = 0 }) {
   const last = closes.length - 1;
   const recentCloses = closes.slice(Math.max(0, last - 19), last + 1);
@@ -1376,6 +1416,175 @@ function PortfolioSummary({ items, portfolio, onSelectStock }) {
   );
 }
 
+function NetTargetPanel({
+  settings,
+  onSettingsChange,
+  onMonthlyPctChange,
+  onMonthlyTlChange,
+  onYearlyPctChange,
+  onYearlyTlChange,
+  summary,
+}) {
+  const {
+    portfolioValue,
+    monthlyStartValue,
+    yearlyStartValue,
+    monthlyTargetPct,
+    monthlyTargetTl,
+    yearlyTargetPct,
+    yearlyTargetTl,
+    monthlyNetTl,
+    monthlyNetPct,
+    yearlyNetTl,
+    yearlyNetPct,
+    monthlyGrossTl,
+    yearlyGrossTl,
+    monthlyCost,
+    yearlyCostTotal,
+    daysLeftInMonth,
+    requiredDailyTl,
+    chartRows,
+  } = summary;
+
+  const monthlyProgress = monthlyTargetTl > 0 ? clip((monthlyNetTl / monthlyTargetTl) * 100, -999, 999) : null;
+  const yearlyProgress = yearlyTargetTl > 0 ? clip((yearlyNetTl / yearlyTargetTl) * 100, -999, 999) : null;
+  const chartMax = Math.max(
+    1,
+    ...chartRows.flatMap((r) => [Math.abs(r.netPct || 0), Math.abs(r.targetPct || 0)])
+  );
+
+  return (
+    <div className="rounded-xl p-4 mt-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+      <div className="flex items-center gap-2 mb-3">
+        <Activity size={15} style={{ color: C.amber }} />
+        <span className="font-display text-sm font-semibold" style={{ color: C.text }}>Ana Para & Hedef Takibi (Net)</span>
+      </div>
+
+      <div className="grid sm:grid-cols-2 grid-cols-1 gap-3 mb-4">
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Başlangıç Ana Para (referans TL)</label>
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={settings.initialPrincipal}
+            onChange={(e) => onSettingsChange("initialPrincipal", e.target.value)}
+            className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
+            style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }}
+            placeholder="10000000"
+          />
+        </div>
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Portföy Değeri (nakit hariç)</label>
+          <div className="font-mono rounded-lg px-3 py-2 text-sm" style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }}>
+            {money(portfolioValue)}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 grid-cols-1 gap-3 mb-4">
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Aylık Hedef %</label>
+          <input type="number" step="0.01" value={settings.monthlyTargetPct} onChange={(e) => onMonthlyPctChange(e.target.value)}
+            className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
+            style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="3.00" />
+        </div>
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Aylık Hedef TL</label>
+          <input type="number" step="0.01" value={settings.monthlyTargetTl} onChange={(e) => onMonthlyTlChange(e.target.value)}
+            className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
+            style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="300000" />
+        </div>
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Yıllık Hedef %</label>
+          <input type="number" step="0.01" value={settings.yearlyTargetPct} onChange={(e) => onYearlyPctChange(e.target.value)}
+            className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
+            style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="36.00" />
+        </div>
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Yıllık Hedef TL</label>
+          <input type="number" step="0.01" value={settings.yearlyTargetTl} onChange={(e) => onYearlyTlChange(e.target.value)}
+            className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
+            style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="3600000" />
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 grid-cols-1 gap-3 mb-4">
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Aylık Net Kesinti (TL)</label>
+          <input type="number" min={0} step="0.01" value={settings.monthlyCostsTl} onChange={(e) => onSettingsChange("monthlyCostsTl", e.target.value)}
+            className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
+            style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="15000" />
+        </div>
+        <div>
+          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Yıllık Ek Net Kesinti (TL)</label>
+          <input type="number" min={0} step="0.01" value={settings.yearlyExtraCostsTl} onChange={(e) => onSettingsChange("yearlyExtraCostsTl", e.target.value)}
+            className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
+            style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="0" />
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 grid-cols-1 gap-3 mb-4">
+        <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+          <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Güncel Ay (detay)</div>
+          <div className="font-mono text-[11px] space-y-1" style={{ color: C.faint }}>
+            <div>Dönem başı: <span style={{ color: C.text }}>{monthlyStartValue != null ? money(monthlyStartValue) : "—"}</span></div>
+            <div>Hedef: <span style={{ color: C.text }}>{money(monthlyTargetTl)} · {signedPct(monthlyTargetPct)}</span></div>
+            <div>Gerçekleşen net: <span style={{ color: monthlyNetTl >= 0 ? C.green : C.red }}>{signedMoney(monthlyNetTl)} · {signedPct(monthlyNetPct)}</span></div>
+            <div>Sapma: <span style={{ color: monthlyNetTl - monthlyTargetTl >= 0 ? C.green : C.red }}>{signedMoney(monthlyNetTl - monthlyTargetTl)}</span></div>
+            <div>Hedefe ilerleme: <span style={{ color: C.text }}>{monthlyProgress != null && Number.isFinite(monthlyProgress) ? `${monthlyProgress.toFixed(1)}%` : "—"}</span></div>
+            <div>Kesinti etkisi: <span style={{ color: C.text }}>{signedMoney(monthlyGrossTl - monthlyNetTl)} (Aylık kesinti: {money(monthlyCost)})</span></div>
+            <div>Kalan gün: <span style={{ color: C.text }}>{daysLeftInMonth}</span> · Gerekli günlük net: <span style={{ color: C.text }}>{requiredDailyTl != null ? money(requiredDailyTl) : "—"}</span></div>
+          </div>
+        </div>
+        <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+          <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Yıl Özeti (net)</div>
+          <div className="font-mono text-[11px] space-y-1" style={{ color: C.faint }}>
+            <div>Dönem başı: <span style={{ color: C.text }}>{yearlyStartValue != null ? money(yearlyStartValue) : "—"}</span></div>
+            <div>Hedef: <span style={{ color: C.text }}>{money(yearlyTargetTl)} · {signedPct(yearlyTargetPct)}</span></div>
+            <div>Gerçekleşen net: <span style={{ color: yearlyNetTl >= 0 ? C.green : C.red }}>{signedMoney(yearlyNetTl)} · {signedPct(yearlyNetPct)}</span></div>
+            <div>Sapma: <span style={{ color: yearlyNetTl - yearlyTargetTl >= 0 ? C.green : C.red }}>{signedMoney(yearlyNetTl - yearlyTargetTl)}</span></div>
+            <div>Hedefe ilerleme: <span style={{ color: C.text }}>{yearlyProgress != null && Number.isFinite(yearlyProgress) ? `${yearlyProgress.toFixed(1)}%` : "—"}</span></div>
+            <div>Kesinti etkisi: <span style={{ color: C.text }}>{signedMoney(yearlyGrossTl - yearlyNetTl)} (Yıllık toplam kesinti: {money(yearlyCostTotal)})</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+        <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Aylık Net Performans (Hedef vs Gerçekleşen)</div>
+        {!chartRows.length ? (
+          <p className="font-body text-xs" style={{ color: C.faint }}>Grafik, aylık snapshot oluştukça dolacaktır.</p>
+        ) : (
+          <div className="grid gap-1.5">
+            {chartRows.map((row) => {
+              const netPct = row.netPct || 0;
+              const tgtPct = row.targetPct || 0;
+              const netW = `${(Math.abs(netPct) / chartMax) * 100}%`;
+              const tgtW = `${(Math.abs(tgtPct) / chartMax) * 100}%`;
+              return (
+                <div key={row.monthKey} className="grid grid-cols-[46px_1fr_auto] items-center gap-2">
+                  <span className="font-mono text-[11px]" style={{ color: C.faint }}>{monthLabel(row.monthKey)}</span>
+                  <div className="space-y-1">
+                    <div className="h-2 rounded-full overflow-hidden" style={{ background: C.bg }}>
+                      <div className="h-full rounded-full" style={{ width: netW, background: netPct >= 0 ? C.green : C.red }} />
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: C.bg }}>
+                      <div className="h-full rounded-full" style={{ width: tgtW, background: C.amber }} />
+                    </div>
+                  </div>
+                  <span className="font-mono text-[10px]" style={{ color: netPct >= tgtPct ? C.green : C.red }}>
+                    {signedPct(netPct)} / Hedef {signedPct(tgtPct)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ────────────────────────────────────────────────────────────────
    Ana uygulama
    ────────────────────────────────────────────────────────────── */
@@ -1396,6 +1605,17 @@ export default function SinyalMasasi() {
   const [detailSymbol, setDetailSymbol] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [netTargetSettings, setNetTargetSettings] = useState(() => lsGet("sm_net_targets", {
+    initialPrincipal: "",
+    monthlyTargetPct: "",
+    monthlyTargetTl: "",
+    yearlyTargetPct: "",
+    yearlyTargetTl: "",
+    monthlyCostsTl: "",
+    yearlyExtraCostsTl: "",
+  }));
+  const [perfSnapshots, setPerfSnapshots] = useState(() => lsGet("sm_perf_snapshots", { months: {}, years: {} }));
+  const [monthlyHistory, setMonthlyHistory] = useState(() => lsGet("sm_monthly_history", {}));
 
   // Hedef fiyatlar localStorage'dan
   const [targets, setTargets] = useState(() => lsGet("sm_targets", {}));
@@ -1412,6 +1632,9 @@ export default function SinyalMasasi() {
   useEffect(() => { lsSet("sm_targets", targets); }, [targets]);
   // Portfolio değiştikçe kaydet
   useEffect(() => { lsSet("sm_portfolio", portfolio); }, [portfolio]);
+  useEffect(() => { lsSet("sm_net_targets", netTargetSettings); }, [netTargetSettings]);
+  useEffect(() => { lsSet("sm_perf_snapshots", perfSnapshots); }, [perfSnapshots]);
+  useEffect(() => { lsSet("sm_monthly_history", monthlyHistory); }, [monthlyHistory]);
   useEffect(() => { latestNewsRef.current = newsMap; }, [newsMap]);
 
   const handleTargetChange = (symbol, key, value) => {
@@ -1432,6 +1655,10 @@ export default function SinyalMasasi() {
   const handlePortfolioChange = (symbol, key, value) => {
     setPortfolio((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), [key]: value } }));
   };
+
+  const handleNetSettingChange = useCallback((key, value) => {
+    setNetTargetSettings((prev) => ({ ...prev, [key]: value }));
+  }, []);
 
   const packageAndStore = useCallback((symbol, hist, stockNewsSentiment = 0, marketNewsSentiment = 0, isDemo = false) => {
     const packaged = { ...packageHistory(hist, stockNewsSentiment, marketNewsSentiment), isDemo };
@@ -1531,6 +1758,152 @@ export default function SinyalMasasi() {
   };
 
   const items = stocks.map((stock) => ({ stock, data: dataMap[stock.symbol] }));
+  const portfolioValue = useMemo(
+    () => items.reduce((sum, { stock, data }) => {
+      if (!data) return sum;
+      const lots = parsePositiveNumber(portfolio[stock.symbol]?.lots);
+      if (lots == null || lots <= 0) return sum;
+      return sum + lots * data.price;
+    }, 0),
+    [items, portfolio]
+  );
+  const now = new Date();
+  const currentMonthKey = monthKeyFromDate(now);
+  const currentYearKey = yearKeyFromDate(now);
+
+  useEffect(() => {
+    if (!portfolioValue || portfolioValue <= 0) return;
+    setPerfSnapshots((prev) => {
+      const months = { ...(prev.months || {}) };
+      const years = { ...(prev.years || {}) };
+      let changed = false;
+      if (!months[currentMonthKey]) {
+        months[currentMonthKey] = { startValue: Number(portfolioValue.toFixed(2)), createdAt: new Date().toISOString() };
+        changed = true;
+      }
+      if (!years[currentYearKey]) {
+        years[currentYearKey] = { startValue: Number(portfolioValue.toFixed(2)), createdAt: new Date().toISOString() };
+        changed = true;
+      }
+      return changed ? { months, years } : prev;
+    });
+  }, [portfolioValue, currentMonthKey, currentYearKey]);
+
+  const monthlyStartValue = perfSnapshots.months?.[currentMonthKey]?.startValue ?? null;
+  const yearlyStartValue = perfSnapshots.years?.[currentYearKey]?.startValue ?? null;
+  const monthlyCost = parsePositiveNumber(netTargetSettings.monthlyCostsTl) || 0;
+  const yearlyExtraCost = parsePositiveNumber(netTargetSettings.yearlyExtraCostsTl) || 0;
+  const monthsElapsedThisYear = now.getMonth() + 1;
+  const yearlyCostTotal = monthlyCost * monthsElapsedThisYear + yearlyExtraCost;
+
+  const monthlyGrossTl = monthlyStartValue != null ? portfolioValue - monthlyStartValue : 0;
+  const yearlyGrossTl = yearlyStartValue != null ? portfolioValue - yearlyStartValue : 0;
+  const monthlyNetTl = monthlyGrossTl - monthlyCost;
+  const yearlyNetTl = yearlyGrossTl - yearlyCostTotal;
+  const monthlyNetPct = monthlyStartValue && monthlyStartValue > 0 ? (monthlyNetTl / monthlyStartValue) * 100 : null;
+  const yearlyNetPct = yearlyStartValue && yearlyStartValue > 0 ? (yearlyNetTl / yearlyStartValue) * 100 : null;
+
+  const monthlyTargetPctInput = parsePositiveNumber(netTargetSettings.monthlyTargetPct);
+  const monthlyTargetTlInput = parsePositiveNumber(netTargetSettings.monthlyTargetTl);
+  const yearlyTargetPctInput = parsePositiveNumber(netTargetSettings.yearlyTargetPct);
+  const yearlyTargetTlInput = parsePositiveNumber(netTargetSettings.yearlyTargetTl);
+
+  const monthlyTargetPct = monthlyTargetPctInput != null
+    ? monthlyTargetPctInput
+    : (monthlyTargetTlInput != null && monthlyStartValue > 0 ? (monthlyTargetTlInput / monthlyStartValue) * 100 : 0);
+  const monthlyTargetTl = monthlyTargetTlInput != null
+    ? monthlyTargetTlInput
+    : (monthlyTargetPctInput != null && monthlyStartValue > 0 ? (monthlyStartValue * monthlyTargetPctInput) / 100 : 0);
+  const yearlyTargetPct = yearlyTargetPctInput != null
+    ? yearlyTargetPctInput
+    : (yearlyTargetTlInput != null && yearlyStartValue > 0 ? (yearlyTargetTlInput / yearlyStartValue) * 100 : 0);
+  const yearlyTargetTl = yearlyTargetTlInput != null
+    ? yearlyTargetTlInput
+    : (yearlyTargetPctInput != null && yearlyStartValue > 0 ? (yearlyStartValue * yearlyTargetPctInput) / 100 : 0);
+
+  const handleMonthlyPctChange = useCallback((value) => {
+    setNetTargetSettings((prev) => {
+      const pct = parsePositiveNumber(value);
+      if (value === "") return { ...prev, monthlyTargetPct: "", monthlyTargetTl: "" };
+      if (pct == null) return { ...prev, monthlyTargetPct: value };
+      const next = { ...prev, monthlyTargetPct: value };
+      if (monthlyStartValue && monthlyStartValue > 0) next.monthlyTargetTl = ((monthlyStartValue * pct) / 100).toFixed(2);
+      return next;
+    });
+  }, [monthlyStartValue]);
+
+  const handleMonthlyTlChange = useCallback((value) => {
+    setNetTargetSettings((prev) => {
+      const tl = parsePositiveNumber(value);
+      if (value === "") return { ...prev, monthlyTargetTl: "", monthlyTargetPct: "" };
+      if (tl == null) return { ...prev, monthlyTargetTl: value };
+      const next = { ...prev, monthlyTargetTl: value };
+      if (monthlyStartValue && monthlyStartValue > 0) next.monthlyTargetPct = ((tl / monthlyStartValue) * 100).toFixed(2);
+      return next;
+    });
+  }, [monthlyStartValue]);
+
+  const handleYearlyPctChange = useCallback((value) => {
+    setNetTargetSettings((prev) => {
+      const pct = parsePositiveNumber(value);
+      if (value === "") return { ...prev, yearlyTargetPct: "", yearlyTargetTl: "" };
+      if (pct == null) return { ...prev, yearlyTargetPct: value };
+      const next = { ...prev, yearlyTargetPct: value };
+      if (yearlyStartValue && yearlyStartValue > 0) next.yearlyTargetTl = ((yearlyStartValue * pct) / 100).toFixed(2);
+      return next;
+    });
+  }, [yearlyStartValue]);
+
+  const handleYearlyTlChange = useCallback((value) => {
+    setNetTargetSettings((prev) => {
+      const tl = parsePositiveNumber(value);
+      if (value === "") return { ...prev, yearlyTargetTl: "", yearlyTargetPct: "" };
+      if (tl == null) return { ...prev, yearlyTargetTl: value };
+      const next = { ...prev, yearlyTargetTl: value };
+      if (yearlyStartValue && yearlyStartValue > 0) next.yearlyTargetPct = ((tl / yearlyStartValue) * 100).toFixed(2);
+      return next;
+    });
+  }, [yearlyStartValue]);
+
+  useEffect(() => {
+    if (monthlyStartValue == null) return;
+    setMonthlyHistory((prev) => {
+      const existing = prev[currentMonthKey] || {};
+      const nextEntry = {
+        ...existing,
+        monthKey: currentMonthKey,
+        startValue: Number(monthlyStartValue.toFixed(2)),
+        endValue: Number(portfolioValue.toFixed(2)),
+        netTl: Number(monthlyNetTl.toFixed(2)),
+        netPct: monthlyNetPct != null ? Number(monthlyNetPct.toFixed(3)) : null,
+        targetTl: Number(monthlyTargetTl.toFixed(2)),
+        targetPct: Number(monthlyTargetPct.toFixed(3)),
+        monthlyCost: Number(monthlyCost.toFixed(2)),
+        updatedAt: new Date().toISOString(),
+      };
+      const same = JSON.stringify(existing) === JSON.stringify(nextEntry);
+      if (same) return prev;
+      return { ...prev, [currentMonthKey]: nextEntry };
+    });
+  }, [
+    currentMonthKey, monthlyStartValue, portfolioValue, monthlyNetTl, monthlyNetPct,
+    monthlyTargetTl, monthlyTargetPct, monthlyCost,
+  ]);
+
+  const chartRows = useMemo(
+    () => Object.keys(monthlyHistory)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(-12)
+      .map((k) => ({ monthKey: k, ...(monthlyHistory[k] || {}) })),
+    [monthlyHistory]
+  );
+
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const daysLeftInMonth = Math.max(0, endOfMonth.getDate() - now.getDate());
+  const requiredDailyTl = monthlyTargetTl > monthlyNetTl && daysLeftInMonth > 0
+    ? (monthlyTargetTl - monthlyNetTl) / daysLeftInMonth
+    : null;
+
   const detailItem = detailSymbol ? items.find((it) => it.stock.symbol === detailSymbol) : null;
   const detailManualTargets = detailSymbol ? (targets[detailSymbol] || {}) : {};
   const detailResolvedTargets = detailItem?.data ? resolveDisplayedTargets(detailItem.data.suggestedTargets, detailManualTargets) : {};
@@ -1639,6 +2012,35 @@ export default function SinyalMasasi() {
 
         {/* Portföy özeti */}
         <PortfolioSummary items={items} portfolio={portfolio} onSelectStock={setDetailSymbol} />
+
+        <NetTargetPanel
+          settings={netTargetSettings}
+          onSettingsChange={handleNetSettingChange}
+          onMonthlyPctChange={handleMonthlyPctChange}
+          onMonthlyTlChange={handleMonthlyTlChange}
+          onYearlyPctChange={handleYearlyPctChange}
+          onYearlyTlChange={handleYearlyTlChange}
+          summary={{
+            portfolioValue,
+            monthlyStartValue,
+            yearlyStartValue,
+            monthlyTargetPct,
+            monthlyTargetTl,
+            yearlyTargetPct,
+            yearlyTargetTl,
+            monthlyNetTl,
+            monthlyNetPct,
+            yearlyNetTl,
+            yearlyNetPct,
+            monthlyGrossTl,
+            yearlyGrossTl,
+            monthlyCost,
+            yearlyCostTotal,
+            daysLeftInMonth,
+            requiredDailyTl,
+            chartRows,
+          }}
+        />
 
         {lastUpdate && (
           <div className="font-mono text-[11px] text-center mt-5" style={{ color: C.faint }}>
