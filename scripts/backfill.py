@@ -32,23 +32,27 @@ PEER_MAP = {
 }
 
 
-def backfill_symbol(symbol, yahoo, sector, peer_closes):
-    print(f"\n── {symbol} backfill başlıyor ──")
+def backfill_symbol(symbol, yahoo, peer_syms, peer_closes, dry_run=False):
+    """
+    dry_run=True: hiçbir tabloya yazmaz, hesaplanan veriyi sözlük olarak döner
+    (Madde 4 — daha geniş sepette salt okunur doğrulama için). Üretim yolunda
+    (dry_run=False) davranış öncekiyle birebir aynıdır.
+    """
+    print(f"\n── {symbol} backfill başlıyor ── (dry_run={dry_run})")
     rows = fetch_ohlcv(yahoo, range_str="1y")
     if len(rows) < 60:
         print(f"  Yetersiz veri ({len(rows)} gün), atlandı.")
-        return
+        return None
 
-    # Fiyatları toplu yaz
-    price_rows = [{"symbol": symbol, **r} for r in rows]
-    upsert_prices(price_rows)
-    print(f"  {len(rows)} gün fiyat yazıldı.")
+    if not dry_run:
+        price_rows = [{"symbol": symbol, **r} for r in rows]
+        upsert_prices(price_rows)
+        print(f"  {len(rows)} gün fiyat yazıldı.")
 
     closes  = [float(r["close"]) for r in rows]
     volumes = [int(r["volume"]) if r["volume"] else 0 for r in rows]
     dates   = [r["date"] for r in rows]
 
-    peer_syms  = PEER_MAP.get(sector, [])
     peers_data = [peer_closes.get(p, []) for p in peer_syms if peer_closes.get(p)]
 
     feature_rows   = []
@@ -124,13 +128,20 @@ def backfill_symbol(symbol, yahoo, sector, peer_closes):
             "confirmed":           confirmed,
         })
 
+    if dry_run:
+        print(f"  {symbol} dry-run hesaplandı (DB'ye yazılmadı) ✓  {len(feature_rows)} gün")
+        return {
+            "dates": dates,
+            "closes": closes,
+            "feature_rows": feature_rows,
+            "score_rows": score_rows,
+            "signal_rows_db": signal_rows_db,
+        }
+
     # Toplu yaz
     upsert_features(feature_rows)
     print(f"  {len(feature_rows)} gün feature yazıldı.")
 
-    # model_scores toplu
-    for row in score_rows:
-        pass  # batch yerine tek tek (veya 500'lük dilimler)
     # 500'er dilimde yaz
     for i in range(0, len(score_rows), 500):
         upsert_model_scores(score_rows[i:i + 500])
@@ -164,6 +175,7 @@ def backfill_symbol(symbol, yahoo, sector, peer_closes):
         print(f"  {model_key}: isabet=%{hit}  n={n}  ort.getiri=%{avg_return}  islem={trade_count}")
 
     print(f"  {symbol} backfill tamamlandı ✓")
+    return None
 
 
 def main():
@@ -185,7 +197,8 @@ def main():
     errors = []
     for stock in CORE_STOCKS:
         try:
-            backfill_symbol(stock["symbol"], stock["yahoo"], stock["sector"], peer_closes)
+            peer_syms = PEER_MAP.get(stock["sector"], [])
+            backfill_symbol(stock["symbol"], stock["yahoo"], peer_syms, peer_closes)
         except Exception as e:
             traceback.print_exc()
             errors.append({"symbol": stock["symbol"], "error": str(e)})
