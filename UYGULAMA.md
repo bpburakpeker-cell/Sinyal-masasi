@@ -1,44 +1,48 @@
-# Sinyal Masası Uygulaması
+# Sinyal Masası Uygulaması (Güncel Vercel Deploy)
 
-Sinyal Masası, BIST hisseleri için teknik göstergeleri birleştirip **AL / BEKLE / SAT** sinyali üreten, haber sentimenti ve basit portföy takibi sunan bir React + Vercel uygulamasıdır.
+Sinyal Masası, BIST hisseleri için teknik analiz + haber etkisini birleştirerek **AL / BEKLE / SAT** sinyali ve hedef fiyat üreten React + Vercel uygulamasıdır.
 
-## Ne yapar?
+## Son deploy ile güncel özellikler
 
-- Seçilen hisseler için fiyat geçmişini getirir (`/api/quote`).
-- USD/TRY kurunu sunucu tarafında çeker (`/api/fx`).
-- Hisse haberlerini ve genel borsa haberlerini toplayıp başlığa göre sentiment puanı üretir (`/api/news`).
-- Teknik göstergeler hesaplar:
-  - RSI (14)
-  - MACD
-  - SMA 20/50
-  - Bollinger Bands
-- Göstergeleri ağırlıklandırıp birleşik bir skor üretir ve sinyale dönüştürür:
-  - **AL**
-  - **BEKLE**
-  - **SAT**
-- Teknik destek/direnç, Bollinger, SMA ve haber akışına göre otomatik **AL / BEKLE / SAT** hedefleri önerir.
-- Otomatik hedefleri kullanıcı bazında manuel olarak ezmeye ve tekrar otomatik değere dönmeye izin verir.
-- Lot/maliyet girişi ve kâr-zarar özeti sağlar.
-- Geçmiş veriye göre basit bir strateji simülasyonu (backtest) yapar.
+- BIST hisse listesi içinden arama yaparak hisse ekleme/çıkarma.
+- Kart görünümünde anlık sinyal, fiyat, günlük değişim ve hedef özeti.
+- Detay sayfasında sekmeler:
+  - **Özet** (teknik metrikler ve hedefler)
+  - **Haberler** (hisse + piyasa haber akışı)
+  - **Simülasyon** (basit backtest çıktısı)
+- Otomatik **AL / BEKLE / SAT** hedef motoru:
+  - Bollinger, SMA20/50, RSI, MACD ve haber sentimentini birlikte kullanır.
+  - Kullanıcı hedefleri manuel düzenleyebilir, isterse tekrar otomatik hedefe dönebilir.
+- Portföy alanı:
+  - Lot ve maliyet girişi
+  - Güncel kâr/zarar hesaplaması
+- Veri yenileme:
+  - Fiyat/kur verisi: 10 saniyede bir
+  - Haber verisi: 5 dakikada bir
+  - Manuel yenile butonu
 
-## Uygulama yapısı
+## Teknik bileşenler
 
-- `src/App.jsx`: Ana arayüz, sinyal hesaplama, otomatik hedef fiyat motoru ve ekran bileşenleri.
-- `api/quote.js`: Yahoo Finance fiyat geçmişi proxy fonksiyonu.
-- `api/fx.js`: USD/TRY kuru için çok kaynaklı fonksiyon.
-- `api/news.js`: Hisse ve piyasa RSS haberlerini çekip sentiment hesaplaması yapar.
+- `src/App.jsx`
+  - Ana dashboard, hisse yönetimi, sinyal hesaplama, hedef motoru, detay ekranı ve backtest.
+- `api/quote.js`
+  - Yahoo Finance fiyat geçmişi (`range=1y`, `interval=1d`), sunucu tarafı cache.
+- `api/fx.js`
+  - USD/TRY için çok kaynaklı fallback (Frankfurter + ER-API), sunucu tarafı cache.
+- `api/news.js`
+  - Yahoo RSS kaynaklarından hisse + piyasa haberleri, başlık bazlı sentiment ve birleşik haber skoru.
 
-## Çalışma akışı (özet)
+## Çalışma akışı
 
-1. Kullanıcı hisse seçer.
-2. Uygulama API uç noktalarından veri çeker.
-3. Teknik göstergeler ile hisse + piyasa haber sentimenti hesaplanır.
-4. Adaptif ağırlıklarla skor ve sinyal üretilir.
-5. Ayrı bir hedef motoru otomatik AL / BEKLE / SAT fiyat bantlarını oluşturur.
-6. Kart ve detay ekranlarında otomatik ve manuel hedefler birlikte gösterilir.
+1. Kullanıcı hisseleri seçer.
+2. Uygulama `/api/quote`, `/api/fx`, `/api/news` uç noktalarından verileri toplar.
+3. Teknik göstergeler + haber sentimenti ile birleşik skor üretilir.
+4. Skor **AL / BEKLE / SAT** sinyaline çevrilir.
+5. Otomatik hedef motoru AL/BEKLE/SAT fiyat seviyelerini hesaplar.
+6. Kullanıcı isterse hedefleri manuel override eder ve localStorage'da saklar.
 
 ## Notlar
 
-- Veriler tarayıcıdan değil, Vercel sunucu fonksiyonları üzerinden alındığı için CORS sorunları azaltılır.
-- API key gerektirmeden çalışacak şekilde tasarlanmıştır.
-- Yerel kullanıcı tercihleri (hisseler, manuel hedef ezmeleri, portföy) `localStorage` içinde tutulur.
+- Tüm veri çağrıları Vercel serverless fonksiyonları üzerinden geçtiği için tarayıcı tarafında CORS etkisi azaltılır.
+- API key gerektirmez.
+- Kullanıcı verileri (`sm_stocks`, `sm_targets`, `sm_portfolio`) localStorage'da tutulur.
