@@ -250,6 +250,384 @@ function monthLabel(monthKey) {
   return d.toLocaleDateString("tr-TR", { month: "short" });
 }
 
+function yearLabel(yearKey) {
+  return `${yearKey}`;
+}
+
+function dateKeyFromDate(date = new Date()) {
+  return new Date(date).toISOString().slice(0, 10);
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function avgAbs(values, fallback = 0) {
+  const valid = values.filter((v) => Number.isFinite(v)).map((v) => Math.abs(v));
+  if (!valid.length) return fallback;
+  return valid.reduce((sum, v) => sum + v, 0) / valid.length;
+}
+
+function normalizeSigned(value, scale = 1) {
+  return clip((value || 0) / Math.max(scale, 1e-6), -1, 1);
+}
+
+function normalizePositive(value, scale = 1) {
+  return clip((value || 0) / Math.max(scale, 1e-6), 0, 1);
+}
+
+function compareDirection(predictedPct, actualPct) {
+  const eps = 0.35;
+  const expected = predictedPct > eps ? 1 : predictedPct < -eps ? -1 : 0;
+  const actual = actualPct > eps ? 1 : actualPct < -eps ? -1 : 0;
+  return expected === actual;
+}
+
+function sectorBiasScore(sectorName = "") {
+  const s = String(sectorName).toLowerCase();
+  if (!s) return 0;
+  if (s.includes("bank")) return 0.10;
+  if (s.includes("energy")) return 0.04;
+  if (s.includes("industrial")) return 0.06;
+  if (s.includes("consumer")) return 0.08;
+  if (s.includes("technology")) return 0.12;
+  if (s.includes("health")) return 0.08;
+  if (s.includes("communication")) return 0.05;
+  if (s.includes("basic materials")) return 0.02;
+  if (s.includes("real estate")) return -0.02;
+  return 0;
+}
+
+const LEARNING_FACTOR_KEYS = [
+  "rsi", "macd", "ma", "boll", "stockNews", "marketNews",
+  "sector", "competition", "management", "macro", "dividend", "filings", "flow",
+];
+
+const LEARNING_WEIGHT_KEY_MAP = {
+  rsi: "wRsi",
+  macd: "wMacd",
+  ma: "wMa",
+  boll: "wBoll",
+  stockNews: "wStockNews",
+  marketNews: "wMarketNews",
+  sector: "wSector",
+  competition: "wCompetition",
+  management: "wManagement",
+  macro: "wMacro",
+  dividend: "wDividend",
+  filings: "wFilings",
+  flow: "wFlow",
+};
+
+const PREDICTION_HORIZON_DAYS = 5;
+const MODEL_VERSION = "v2-multifactor";
+
+function computeAdvancedFactorScores({
+  stock,
+  closes = [],
+  volumes = [],
+  company = {},
+  market = {},
+  stockNewsSentiment = 0,
+  marketNewsSentiment = 0,
+}) {
+  const price = closes[closes.length - 1] || 0;
+  const price5d = closes.length > 5 ? ((price - closes[closes.length - 6]) / closes[closes.length - 6]) * 100 : 0;
+  const price20d = closes.length > 20 ? ((price - closes[closes.length - 21]) / closes[closes.length - 21]) * 100 : 0;
+  const validVolumes = volumes.filter((v) => Number.isFinite(v));
+  const latestVolume = validVolumes[validVolumes.length - 1] || 0;
+  const volumeAvg20 = mean(validVolumes.slice(-20), latestVolume || 1);
+  const volumeRatio = volumeAvg20 > 0 ? latestVolume / volumeAvg20 : 1;
+
+  const xu100Change20d = market?.xu100?.change20d || 0;
+  const usdTryChange20d = market?.usdTry?.change20d || 0;
+  const sectorName = company?.sector || stock?.sector || "";
+  const industryName = company?.industry || stock?.sector || "";
+
+  const dividendYield = company?.dividendYield || 0;
+  const payoutRatio = company?.payoutRatio || 0;
+  const profitMargins = company?.profitMargins || 0;
+  const operatingMargins = company?.operatingMargins || 0;
+  const earningsGrowth = company?.earningsGrowth || 0;
+  const revenueGrowth = company?.revenueGrowth || 0;
+  const returnOnEquity = company?.returnOnEquity || 0;
+  const debtToEquity = company?.debtToEquity || 0;
+  const recommendationMean = company?.recommendationMean ?? 3;
+  const targetMeanPrice = company?.targetMeanPrice || price;
+  const targetUpsidePct = price > 0 && targetMeanPrice
+    ? ((targetMeanPrice - price) / price) * 100
+    : 0;
+  const earningsDate = company?.earningsTimestamp ? new Date(company.earningsTimestamp * 1000) : null;
+  const daysToEarnings = earningsDate ? Math.round((earningsDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)) : null;
+  const payoutBalance = payoutRatio > 0 ? 1 - Math.abs(Math.min(payoutRatio, 1.4) - 0.5) / 0.5 : 0;
+
+  const factorScores = {
+    sector: clip(
+      sectorBiasScore(sectorName) +
+      normalizeSigned(price20d - xu100Change20d, 15) * 0.55 +
+      normalizeSigned(revenueGrowth, 0.25) * 0.20 +
+      normalizeSigned(stockNewsSentiment, 0.6) * 0.10,
+      -1, 1
+    ),
+    competition: clip(
+      normalizeSigned(profitMargins, 0.25) * 0.35 +
+      normalizeSigned(operatingMargins, 0.25) * 0.25 +
+      normalizeSigned(returnOnEquity, 0.40) * 0.20 -
+      normalizeSigned(debtToEquity, 250) * 0.10 +
+      normalizeSigned(targetUpsidePct, 20) * 0.10,
+      -1, 1
+    ),
+    management: clip(
+      normalizeSigned(earningsGrowth, 0.25) * 0.30 +
+      normalizeSigned(revenueGrowth, 0.25) * 0.25 +
+      normalizeSigned(returnOnEquity, 0.35) * 0.20 -
+      normalizeSigned(debtToEquity, 250) * 0.10 +
+      normalizeSigned(3 - recommendationMean, 1.5) * 0.15,
+      -1, 1
+    ),
+    macro: clip(
+      normalizeSigned(xu100Change20d, 12) * 0.40 -
+      normalizeSigned(usdTryChange20d, 10) * 0.40 +
+      normalizeSigned(marketNewsSentiment, 0.5) * 0.20,
+      -1, 1
+    ),
+    dividend: clip(
+      normalizePositive(dividendYield, 0.08) * 0.55 +
+      clip(payoutBalance, 0, 1) * 0.30 +
+      normalizeSigned(profitMargins, 0.20) * 0.15,
+      -1, 1
+    ),
+    filings: clip(
+      normalizeSigned(stockNewsSentiment, 0.60) * 0.45 +
+      normalizeSigned(targetUpsidePct, 20) * 0.20 +
+      normalizeSigned(3 - recommendationMean, 1.5) * 0.20 +
+      (daysToEarnings != null && daysToEarnings >= 0 && daysToEarnings <= 14 ? 0.15 : 0),
+      -1, 1
+    ),
+    flow: clip(
+      normalizeSigned(volumeRatio - 1, 1.5) * 0.45 +
+      normalizeSigned(price5d, 8) * 0.25 +
+      normalizeSigned(price20d, 15) * 0.15 +
+      normalizeSigned(marketNewsSentiment, 0.5) * 0.15,
+      -1, 1
+    ),
+  };
+
+  const details = [
+    {
+      key: "sector",
+      label: "Sektör Analizi",
+      value: factorScores.sector,
+      sub: `${sectorName || "BIST"} / ${industryName || "Genel"} sektör proxy skoru · 20g relatif getiri ${(price20d - xu100Change20d).toFixed(2)}%`,
+    },
+    {
+      key: "competition",
+      label: "Rekabet Pozisyonu",
+      value: factorScores.competition,
+      sub: `Marj ve hedef potansiyeli proxy · net kâr marjı ${(profitMargins * 100).toFixed(1)}%`,
+    },
+    {
+      key: "management",
+      label: "Yönetim Kalitesi",
+      value: factorScores.management,
+      sub: `Büyüme + ROE + borç dengesi proxy · ROE ${(returnOnEquity * 100).toFixed(1)}%`,
+    },
+    {
+      key: "macro",
+      label: "Makro Faktörler",
+      value: factorScores.macro,
+      sub: `XU100 20g ${signedPct(xu100Change20d)} · USD/TRY 20g ${signedPct(usdTryChange20d)}`,
+    },
+    {
+      key: "dividend",
+      label: "Temettü Politikası",
+      value: factorScores.dividend,
+      sub: `Temettü verimi ${(dividendYield * 100).toFixed(2)}% · payout ${(payoutRatio * 100).toFixed(1)}%`,
+    },
+    {
+      key: "filings",
+      label: "KAP / Kurumsal Olay",
+      value: factorScores.filings,
+      sub: daysToEarnings != null
+        ? `Yaklaşan bilanço/kurumsal olay etkisi proxy · ${daysToEarnings} gün`
+        : "Kurumsal olaylar haber ve hedef verilerinden proxy olarak izleniyor",
+    },
+    {
+      key: "flow",
+      label: "Piyasa Akışı",
+      value: factorScores.flow,
+      sub: `Hacim oranı ${volumeRatio.toFixed(2)}x · 5g momentum ${signedPct(price5d)}`,
+    },
+  ];
+
+  return {
+    scores: factorScores,
+    details,
+    metrics: {
+      sectorName,
+      industryName,
+      price5d,
+      price20d,
+      volumeRatio,
+      xu100Change20d,
+      usdTryChange20d,
+      dividendYield,
+      payoutRatio,
+      targetUpsidePct,
+      daysToEarnings,
+    },
+  };
+}
+
+function derivePredictionLearningWeights(records = []) {
+  const completed = records.filter((row) =>
+    row?.actualPrice != null &&
+    row?.basePrice != null &&
+    row?.factorSnapshot
+  );
+  if (completed.length < 6) return {};
+
+  const pairsByKey = Object.fromEntries(LEARNING_FACTOR_KEYS.map((key) => [key, []]));
+  completed.forEach((row) => {
+    const realizedRet = row.basePrice > 0 ? (row.actualPrice - row.basePrice) / row.basePrice : 0;
+    LEARNING_FACTOR_KEYS.forEach((key) => {
+      const factorValue = row.factorSnapshot?.[key];
+      if (Number.isFinite(factorValue)) pairsByKey[key].push([factorValue, realizedRet]);
+    });
+  });
+
+  function edgeScore(pairs) {
+    const pos = pairs.filter((p) => p[0] > 0.15).map((p) => p[1]);
+    const neg = pairs.filter((p) => p[0] < -0.15).map((p) => p[1]);
+    if (!pos.length || !neg.length) return 1;
+    const posAvg = pos.reduce((sum, value) => sum + value, 0) / pos.length;
+    const negAvg = neg.reduce((sum, value) => sum + value, 0) / neg.length;
+    return Math.max(posAvg - negAvg, 0.0001);
+  }
+
+  const rawScores = Object.fromEntries(
+    LEARNING_FACTOR_KEYS.map((key) => [key, edgeScore(pairsByKey[key])])
+  );
+  const avgScore = mean(Object.values(rawScores), 1);
+
+  return Object.fromEntries(
+    Object.entries(rawScores).map(([key, value]) => [key, clip(value / avgScore, 0.70, 1.45)])
+  );
+}
+
+function buildWeightModel(dynamicWeights, factorScores = {}, learnedWeights = {}) {
+  const weights = {
+    ...dynamicWeights,
+    wSector: 0.06 + Math.abs(factorScores.sector || 0) * 0.04,
+    wCompetition: 0.06 + Math.abs(factorScores.competition || 0) * 0.04,
+    wManagement: 0.06 + Math.abs(factorScores.management || 0) * 0.04,
+    wMacro: 0.06 + Math.abs(factorScores.macro || 0) * 0.04,
+    wDividend: 0.05 + Math.abs(factorScores.dividend || 0) * 0.03,
+    wFilings: 0.05 + Math.abs(factorScores.filings || 0) * 0.03,
+    wFlow: 0.06 + Math.abs(factorScores.flow || 0) * 0.04,
+  };
+
+  Object.entries(LEARNING_WEIGHT_KEY_MAP).forEach(([factorKey, weightKey]) => {
+    if (learnedWeights[factorKey] != null && weights[weightKey] != null) {
+      weights[weightKey] *= learnedWeights[factorKey];
+    }
+  });
+
+  const total = Object.values(weights).reduce((sum, value) => sum + value, 0) || 1;
+  return Object.fromEntries(
+    Object.entries(weights).map(([key, value]) => [key, value / total])
+  );
+}
+
+function buildForecast({ price, score, closes = [], factorScores = {}, suggestedTargets = {} }) {
+  const returns = closes.slice(-25).map((close, idx, arr) => (
+    idx === 0 || !arr[idx - 1] ? null : (close - arr[idx - 1]) / arr[idx - 1]
+  )).filter((v) => Number.isFinite(v));
+  const baseVolatility = clip(avgAbs(returns, 0.012), 0.008, 0.06);
+  const factorBias = mean(Object.values(factorScores), 0);
+  const expectedPct = clip(
+    ((score / 100) * 0.65 + factorBias * 0.35) * Math.max(baseVolatility * Math.sqrt(PREDICTION_HORIZON_DAYS) * 1.9, 0.015),
+    -0.18,
+    0.18
+  );
+
+  let predictedPrice = roundPrice(price * (1 + expectedPct));
+  if (expectedPct > 0 && suggestedTargets.sell) {
+    predictedPrice = roundPrice(mean([predictedPrice, suggestedTargets.sell], predictedPrice));
+  } else if (expectedPct < 0 && suggestedTargets.buy) {
+    predictedPrice = roundPrice(mean([predictedPrice, suggestedTargets.buy], predictedPrice));
+  }
+
+  const rangePct = Math.max(baseVolatility * Math.sqrt(PREDICTION_HORIZON_DAYS) * 1.2, 0.012);
+  return {
+    horizonDays: PREDICTION_HORIZON_DAYS,
+    expectedPct: Number((expectedPct * 100).toFixed(2)),
+    predictedPrice,
+    low: roundPrice(predictedPrice * (1 - rangePct)),
+    high: roundPrice(predictedPrice * (1 + rangePct)),
+    direction: expectedPct > 0.01 ? "YUKARI" : expectedPct < -0.01 ? "AŞAĞI" : "YATAY",
+    confidence: clip(Math.abs(score) / 100 * 0.55 + Math.abs(factorBias) * 0.45, 0, 1),
+  };
+}
+
+function reconcilePredictionRecords(records = [], packaged, symbol) {
+  if (!packaged?.closes?.length || !packaged?.dates?.length || !packaged?.forecast) return records;
+
+  const rows = records.map((row) => ({ ...row }));
+  const dateRows = packaged.dates.map((d) => new Date(d));
+
+  rows.forEach((row) => {
+    if (row.actualPrice != null) return;
+    const targetDate = new Date(row.targetDate);
+    const idx = dateRows.findIndex((d) => d >= targetDate);
+    if (idx < 0) return;
+    const actualPrice = packaged.closes[idx];
+    const actualPct = row.basePrice > 0 ? ((actualPrice - row.basePrice) / row.basePrice) * 100 : 0;
+    row.actualPrice = Number(actualPrice.toFixed(2));
+    row.actualDate = dateRows[idx].toISOString();
+    row.realizedPct = Number(actualPct.toFixed(2));
+    row.errorPct = row.predictedPrice > 0
+      ? Number((Math.abs(actualPrice - row.predictedPrice) / row.predictedPrice * 100).toFixed(2))
+      : null;
+    row.directionHit = compareDirection(row.expectedPct, actualPct);
+  });
+
+  const baseDate = packaged.dates[packaged.dates.length - 1];
+  const baseDateKey = dateKeyFromDate(baseDate);
+  const exists = rows.some((row) => row.baseDateKey === baseDateKey && row.horizonDays === PREDICTION_HORIZON_DAYS);
+  if (!exists) {
+    rows.push({
+      id: `${symbol}-${baseDateKey}-${PREDICTION_HORIZON_DAYS}`,
+      symbol,
+      modelVersion: MODEL_VERSION,
+      createdAt: new Date().toISOString(),
+      baseDate: new Date(baseDate).toISOString(),
+      baseDateKey,
+      targetDate: addDays(baseDate, PREDICTION_HORIZON_DAYS).toISOString(),
+      horizonDays: PREDICTION_HORIZON_DAYS,
+      basePrice: Number(packaged.price.toFixed(2)),
+      predictedPrice: packaged.forecast.predictedPrice,
+      expectedPct: packaged.forecast.expectedPct,
+      predictedDirection: packaged.forecast.direction,
+      confidence: Number((packaged.forecast.confidence * 100).toFixed(1)),
+      score: packaged.score,
+      factorSnapshot: { ...packaged.latestSignals, ...packaged.factorScores },
+      factorSummary: packaged.factorDetails.map((detail) => ({ key: detail.key, value: detail.value })),
+      actualPrice: null,
+      actualDate: null,
+      realizedPct: null,
+      errorPct: null,
+      directionHit: null,
+    });
+  }
+
+  return rows
+    .sort((a, b) => new Date(b.baseDate) - new Date(a.baseDate))
+    .slice(0, 260);
+}
+
 function buildAutoTargets({ closes, price, sma20, sma50, rsi, macd, bollinger, signal, stockNewsSentiment = 0, marketNewsSentiment = 0 }) {
   const last = closes.length - 1;
   const recentCloses = closes.slice(Math.max(0, last - 19), last + 1);
@@ -306,7 +684,12 @@ function buildAutoTargets({ closes, price, sma20, sma50, rsi, macd, bollinger, s
   };
 }
 
-function indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, stockNewsSentiment, marketNewsSentiment) {
+function indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, context = {}) {
+  const {
+    stockNewsSentiment = 0,
+    marketNewsSentiment = 0,
+    factorScores = {},
+  } = context;
   let sRsi = 0, sMacd = 0, sMa = 0, sBoll = 0, sStockNews = 0, sMarketNews = 0;
   if (rsi[i] != null) sRsi = clip(-(rsi[i] - 50) / 35, -1, 1);
   if (macd.hist[i] != null) {
@@ -330,14 +713,23 @@ function indicatorSignals(i, closes, sma20, sma50, rsi, macd, bollinger, stockNe
   }
   sStockNews = clip(stockNewsSentiment || 0, -1, 1);
   sMarketNews = clip(marketNewsSentiment || 0, -1, 1);
-  return { sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews };
+  return {
+    sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews,
+    sSector: clip(factorScores.sector || 0, -1, 1),
+    sCompetition: clip(factorScores.competition || 0, -1, 1),
+    sManagement: clip(factorScores.management || 0, -1, 1),
+    sMacro: clip(factorScores.macro || 0, -1, 1),
+    sDividend: clip(factorScores.dividend || 0, -1, 1),
+    sFilings: clip(factorScores.filings || 0, -1, 1),
+    sFlow: clip(factorScores.flow || 0, -1, 1),
+  };
 }
 
-function learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, stockNewsSentiment = 0, marketNewsSentiment = 0) {
+function learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, context = {}) {
   const edges = { rsi: [], macd: [], ma: [], boll: [], stockNews: [], marketNews: [] };
   for (let i = warmup; i < closes.length - 1; i++) {
     const { sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews } = indicatorSignals(
-      i, closes, sma20, sma50, rsi, macd, bollinger, stockNewsSentiment, marketNewsSentiment
+      i, closes, sma20, sma50, rsi, macd, bollinger, context
     );
     const nextRet = (closes[i + 1] - closes[i]) / closes[i];
     edges.rsi.push([sRsi, nextRet]);
@@ -364,13 +756,18 @@ function learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, stockN
   };
 }
 
-function scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, stockNewsSentiment = 0, marketNewsSentiment = 0) {
+function scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, context = {}) {
   return closes.map((_, i) => {
-    const { sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews } = indicatorSignals(
-      i, closes, sma20, sma50, rsi, macd, bollinger, stockNewsSentiment, marketNewsSentiment
+    const {
+      sRsi, sMacd, sMa, sBoll, sStockNews, sMarketNews,
+      sSector, sCompetition, sManagement, sMacro, sDividend, sFilings, sFlow,
+    } = indicatorSignals(
+      i, closes, sma20, sma50, rsi, macd, bollinger, context
     );
     const raw = weights.wRsi * sRsi + weights.wMacd * sMacd + weights.wMa * sMa +
-                weights.wBoll * sBoll + weights.wStockNews * sStockNews + weights.wMarketNews * sMarketNews;
+                weights.wBoll * sBoll + weights.wStockNews * sStockNews + weights.wMarketNews * sMarketNews +
+                weights.wSector * sSector + weights.wCompetition * sCompetition + weights.wManagement * sManagement +
+                weights.wMacro * sMacro + weights.wDividend * sDividend + weights.wFilings * sFilings + weights.wFlow * sFlow;
     return Math.round(clip(raw * 100, -100, 100));
   });
 }
@@ -413,10 +810,12 @@ async function fetchStockHistory(yahooSymbol) {
   if (!result) throw new Error("boş sonuç");
   const ts = result.timestamp || [];
   const closesRaw = result.indicators?.quote?.[0]?.close || [];
-  const rows = ts.map((t, i) => ({ t, c: closesRaw[i] })).filter((r) => r.c != null);
+  const volumesRaw = result.indicators?.quote?.[0]?.volume || [];
+  const rows = ts.map((t, i) => ({ t, c: closesRaw[i], v: volumesRaw[i] })).filter((r) => r.c != null);
   if (rows.length < 60) throw new Error("yetersiz veri");
   return {
     closes: rows.map((r) => r.c),
+    volumes: rows.map((r) => r.v ?? null),
     dates: rows.map((r) => new Date(r.t * 1000)),
     currency: result.meta?.currency || "TRY",
     prevClose: result.meta?.previousClose ?? rows[rows.length - 2]?.c,
@@ -436,31 +835,79 @@ async function fetchNews(yahooSymbol) {
   } catch { return { items: [], avgSentiment: 0, market: { items: [], avgSentiment: 0 }, combinedSentiment: 0 }; }
 }
 
+async function fetchCompany(yahooSymbol) {
+  try {
+    const r = await fetch(`/api/company?symbol=${encodeURIComponent(yahooSymbol)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchMarketContext() {
+  try {
+    const r = await fetch("/api/market");
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 function generateDemoHistory(basePrice, days = 260) {
-  const closes = [], dates = [];
+  const closes = [], dates = [], volumes = [];
   let price = basePrice;
   const now = new Date();
   for (let i = days - 1; i >= 0; i--) {
     price = Math.max(price * (1 + 0.0002 + (Math.random() - 0.5) * 0.028), 0.5);
     closes.push(Number(price.toFixed(2)));
+    volumes.push(Math.round(800000 + Math.random() * 2400000));
     const d = new Date(now); d.setDate(d.getDate() - i); dates.push(d);
   }
-  return { closes, dates, currency: "TRY", prevClose: closes[closes.length - 2] };
+  return { closes, volumes, dates, currency: "TRY", prevClose: closes[closes.length - 2] };
 }
 
 /* ────────────────────────────────────────────────────────────────
    packageHistory — tüm indikatörleri hesapla
    ────────────────────────────────────────────────────────────── */
-function packageHistory(hist, stockNewsSentiment = 0, marketNewsSentiment = 0) {
-  const { closes, dates } = hist;
+function packageHistory(hist, context = {}) {
+  const {
+    stock = null,
+    company = null,
+    market = null,
+    stockNewsSentiment = 0,
+    marketNewsSentiment = 0,
+    learningRecords = [],
+  } = context;
+  const { closes, dates, volumes = [] } = hist;
   const sma20 = smaSeries(closes, 20);
   const sma50 = smaSeries(closes, 50);
   const rsi = rsiSeries(closes, 14);
   const macd = macdSeries(closes);
   const bollinger = bollingerSeries(closes, 20, 2);
   const warmup = 50;
-  const weights = learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, stockNewsSentiment, marketNewsSentiment);
-  const scores = scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, stockNewsSentiment, marketNewsSentiment);
+  const advancedFactors = computeAdvancedFactorScores({
+    stock,
+    closes,
+    volumes,
+    company,
+    market,
+    stockNewsSentiment,
+    marketNewsSentiment,
+  });
+  const learningWeights = derivePredictionLearningWeights(learningRecords);
+  const technicalWeights = learnWeights(closes, sma20, sma50, rsi, macd, bollinger, warmup, {
+    stockNewsSentiment,
+    marketNewsSentiment,
+    factorScores: advancedFactors.scores,
+  });
+  const weights = buildWeightModel(technicalWeights, advancedFactors.scores, learningWeights);
+  const scores = scoreSeries(closes, sma20, sma50, rsi, macd, bollinger, weights, {
+    stockNewsSentiment,
+    marketNewsSentiment,
+    factorScores: advancedFactors.scores,
+  });
   const last = closes.length - 1;
   const price = closes[last];
   const prevClose = hist.prevClose ?? closes[last - 1];
@@ -476,8 +923,29 @@ function packageHistory(hist, stockNewsSentiment = 0, marketNewsSentiment = 0) {
     closes, price, sma20, sma50, rsi: rsi[last], macd, bollinger, signal,
     stockNewsSentiment, marketNewsSentiment,
   });
+  const latestSignals = indicatorSignals(last, closes, sma20, sma50, rsi, macd, bollinger, {
+    stockNewsSentiment,
+    marketNewsSentiment,
+    factorScores: advancedFactors.scores,
+  });
+  const factorSnapshot = {
+    rsi: latestSignals.sRsi,
+    macd: latestSignals.sMacd,
+    ma: latestSignals.sMa,
+    boll: latestSignals.sBoll,
+    stockNews: latestSignals.sStockNews,
+    marketNews: latestSignals.sMarketNews,
+    ...advancedFactors.scores,
+  };
+  const forecast = buildForecast({
+    price,
+    score: scores[last],
+    closes,
+    factorScores: advancedFactors.scores,
+    suggestedTargets,
+  });
   return {
-    closes, dates, sma20, sma50, rsi: rsi[last], rsiSeries: rsi,
+    closes, volumes, dates, sma20, sma50, rsi: rsi[last], rsiSeries: rsi,
     macdHist: macd.hist[last], macd,
     bollinger, bollPos, bollLabel,
     score: scores[last], scoreSeries: scores,
@@ -487,6 +955,13 @@ function packageHistory(hist, stockNewsSentiment = 0, marketNewsSentiment = 0) {
     stockNewsSentiment,
     marketNewsSentiment,
     suggestedTargets,
+    company,
+    market,
+    factorScores: advancedFactors.scores,
+    factorDetails: advancedFactors.details,
+    learningWeights,
+    latestSignals: factorSnapshot,
+    forecast,
   };
 }
 
@@ -754,10 +1229,183 @@ function NewsPanel({ news, loading }) {
   );
 }
 
+function PredictionPerformancePanel({ forecast, predictionRecords = [] }) {
+  const completed = useMemo(
+    () => predictionRecords.filter((row) => row.actualPrice != null).sort((a, b) => new Date(b.baseDate) - new Date(a.baseDate)),
+    [predictionRecords]
+  );
+
+  const summary = useMemo(() => {
+    const directionHits = completed.filter((row) => row.directionHit).length;
+    const directionAccuracy = completed.length ? (directionHits / completed.length) * 100 : null;
+    const avgError = completed.length
+      ? completed.reduce((sum, row) => sum + (row.errorPct || 0), 0) / completed.length
+      : null;
+    const priceAccuracy = avgError != null ? clip(100 - avgError, 0, 100) : null;
+    const composite = directionAccuracy != null && priceAccuracy != null
+      ? (directionAccuracy * 0.55 + priceAccuracy * 0.45)
+      : null;
+
+    const monthMap = {};
+    const yearMap = {};
+    completed.forEach((row) => {
+      const actualDate = row.actualDate || row.targetDate || row.baseDate;
+      const monthKey = monthKeyFromDate(actualDate);
+      const yearKey = yearKeyFromDate(actualDate);
+      monthMap[monthKey] ||= [];
+      yearMap[yearKey] ||= [];
+      monthMap[monthKey].push(row);
+      yearMap[yearKey].push(row);
+    });
+
+    const monthlyRows = Object.keys(monthMap).sort((a, b) => a.localeCompare(b)).slice(-12).map((monthKey) => {
+      const rows = monthMap[monthKey];
+      const hits = rows.filter((row) => row.directionHit).length;
+      const avgMonthError = rows.reduce((sum, row) => sum + (row.errorPct || 0), 0) / rows.length;
+      const avgPredicted = rows.reduce((sum, row) => sum + row.predictedPrice, 0) / rows.length;
+      const avgActual = rows.reduce((sum, row) => sum + row.actualPrice, 0) / rows.length;
+      return {
+        monthKey,
+        count: rows.length,
+        directionAccuracy: (hits / rows.length) * 100,
+        priceAccuracy: clip(100 - avgMonthError, 0, 100),
+        avgPredicted,
+        avgActual,
+      };
+    });
+
+    const yearlyRows = Object.keys(yearMap).sort((a, b) => a.localeCompare(b)).slice(-5).map((yearKey) => {
+      const rows = yearMap[yearKey];
+      const hits = rows.filter((row) => row.directionHit).length;
+      const avgYearError = rows.reduce((sum, row) => sum + (row.errorPct || 0), 0) / rows.length;
+      const accuracy = clip(((hits / rows.length) * 55) + ((100 - avgYearError) * 0.45), 0, 100);
+      return { yearKey, accuracy, count: rows.length };
+    });
+
+    return {
+      directionAccuracy,
+      priceAccuracy,
+      composite,
+      monthlyRows,
+      yearlyRows,
+    };
+  }, [completed]);
+
+  const yearMax = Math.max(1, ...summary.yearlyRows.map((row) => row.accuracy));
+
+  return (
+    <div className="space-y-4">
+      <div className="grid sm:grid-cols-2 grid-cols-1 gap-3">
+        <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+          <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Güncel Tahmin ({forecast?.horizonDays || PREDICTION_HORIZON_DAYS}g)</div>
+          {forecast ? (
+            <div className="font-mono text-[11px] space-y-1" style={{ color: C.faint }}>
+              <div>Tahmin fiyatı: <span style={{ color: C.text }}>{money(forecast.predictedPrice)}</span></div>
+              <div>Bant: <span style={{ color: C.text }}>{money(forecast.low)} – {money(forecast.high)}</span></div>
+              <div>Beklenen hareket: <span style={{ color: forecast.expectedPct >= 0 ? C.green : C.red }}>{signedPct(forecast.expectedPct)}</span></div>
+              <div>Yön: <span style={{ color: C.text }}>{forecast.direction}</span></div>
+              <div>Güven: <span style={{ color: C.text }}>%{(forecast.confidence * 100).toFixed(1)}</span></div>
+            </div>
+          ) : (
+            <p className="font-body text-xs" style={{ color: C.faint }}>Tahmin üretilemedi.</p>
+          )}
+        </div>
+        <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+          <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Tahmin Doğruluğu</div>
+          {completed.length ? (
+            <div className="font-mono text-[11px] space-y-1" style={{ color: C.faint }}>
+              <div>Tamamlanan tahmin: <span style={{ color: C.text }}>{completed.length}</span></div>
+              <div>Yön isabeti: <span style={{ color: C.text }}>{summary.directionAccuracy.toFixed(1)}%</span></div>
+              <div>Fiyat yakınlığı: <span style={{ color: C.text }}>{summary.priceAccuracy.toFixed(1)}%</span></div>
+              <div>Bileşik doğruluk: <span style={{ color: C.text }}>{summary.composite.toFixed(1)}%</span></div>
+            </div>
+          ) : (
+            <p className="font-body text-xs" style={{ color: C.faint }}>Doğruluk hesabı için henüz yeterli kapanmış tahmin yok.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+        <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Son Tahminler · Tahmin Fiyatı vs Gerçekleşen</div>
+        {!completed.length ? (
+          <p className="font-body text-xs" style={{ color: C.faint }}>İlk tahminler oluştukça burada tahmin edilen ve gerçekleşen fiyatlar görünecek.</p>
+        ) : (
+          <div className="space-y-2">
+            {completed.slice(0, 6).map((row) => (
+              <div key={row.id} className="rounded-lg p-2.5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="font-mono text-[11px]" style={{ color: C.text }}>
+                    {new Date(row.baseDate).toLocaleDateString("tr-TR")} → {new Date(row.actualDate).toLocaleDateString("tr-TR")}
+                  </span>
+                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: (row.directionHit ? C.green : C.red) + "22", color: row.directionHit ? C.green : C.red }}>
+                    {row.directionHit ? "Yön tuttu" : "Yön kaçtı"}
+                  </span>
+                </div>
+                <div className="grid sm:grid-cols-4 grid-cols-2 gap-2 mt-2 font-mono text-[11px]" style={{ color: C.faint }}>
+                  <div>Tahmin: <span style={{ color: C.text }}>{money(row.predictedPrice)}</span></div>
+                  <div>Gerçekleşen: <span style={{ color: C.text }}>{money(row.actualPrice)}</span></div>
+                  <div>Beklenen: <span style={{ color: row.expectedPct >= 0 ? C.green : C.red }}>{signedPct(row.expectedPct)}</span></div>
+                  <div>Hata: <span style={{ color: C.text }}>%{row.errorPct?.toFixed(2)}</span></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+        <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Ay Bazında Detay</div>
+        {!summary.monthlyRows.length ? (
+          <p className="font-body text-xs" style={{ color: C.faint }}>Aylık tahmin detayı için tamamlanan tahmin bekleniyor.</p>
+        ) : (
+          <div className="space-y-2">
+            {summary.monthlyRows.slice().reverse().map((row) => (
+              <div key={row.monthKey} className="grid sm:grid-cols-[52px_1fr_auto_auto] grid-cols-1 gap-2 items-center rounded-lg p-2.5"
+                style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <span className="font-mono text-[11px]" style={{ color: C.text }}>{monthLabel(row.monthKey)}</span>
+                <div className="font-mono text-[11px]" style={{ color: C.faint }}>
+                  Ortalama tahmin {money(row.avgPredicted)} · gerçekleşen {money(row.avgActual)}
+                </div>
+                <span className="font-mono text-[11px]" style={{ color: C.text }}>
+                  Yön %{row.directionAccuracy.toFixed(1)}
+                </span>
+                <span className="font-mono text-[11px]" style={{ color: C.text }}>
+                  Fiyat %{row.priceAccuracy.toFixed(1)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
+        <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Yıl Bazında Grafik</div>
+        {!summary.yearlyRows.length ? (
+          <p className="font-body text-xs" style={{ color: C.faint }}>Yıllık doğruluk grafiği için yeterli veri yok.</p>
+        ) : (
+          <div className="space-y-2">
+            {summary.yearlyRows.map((row) => (
+              <div key={row.yearKey} className="grid grid-cols-[42px_1fr_auto] items-center gap-2">
+                <span className="font-mono text-[11px]" style={{ color: C.faint }}>{yearLabel(row.yearKey)}</span>
+                <div className="h-2 rounded-full overflow-hidden" style={{ background: C.bg }}>
+                  <div className="h-full rounded-full" style={{ width: `${(row.accuracy / yearMax) * 100}%`, background: row.accuracy >= 60 ? C.green : row.accuracy >= 45 ? C.amber : C.red }} />
+                </div>
+                <span className="font-mono text-[11px]" style={{ color: C.text }}>
+                  %{row.accuracy.toFixed(1)} · {row.count} kayıt
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ────────────────────────────────────────────────────────────────
    Detay sayfası
    ────────────────────────────────────────────────────────────── */
-function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, onTargetChange, onTargetReset, portfolio, onPortfolioChange, onClose }) {
+function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, predictionRecords, portfolio, onTargetChange, onTargetReset, onPortfolioChange, onClose }) {
   const [btAmount, setBtAmount] = useState(10000);
   const [activeTab, setActiveTab] = useState("indicators");
 
@@ -771,6 +1419,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
   const tabs = [
     { id: "indicators", label: "İndikatörler" },
     { id: "news", label: "Haberler" },
+    { id: "prediction", label: "Tahmin" },
     { id: "portfolio", label: "Portföy" },
     { id: "backtest", label: "Simülasyon" },
   ];
@@ -966,6 +1615,16 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
                 barPct={50 + data.newsSentiment * 50}
                 color={data.newsSentiment > 0.1 ? C.green : data.newsSentiment < -0.1 ? C.red : C.amber}
               />
+              {data.factorDetails?.map((detail) => (
+                <IndicatorBar
+                  key={detail.key}
+                  label={detail.label}
+                  value={detail.value > 0 ? `+${detail.value.toFixed(2)}` : detail.value.toFixed(2)}
+                  sub={detail.sub}
+                  barPct={50 + detail.value * 50}
+                  color={detail.value > 0.15 ? C.green : detail.value < -0.15 ? C.red : C.amber}
+                />
+              ))}
 
               {/* Sinyal skoru */}
               <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${C.border}` }}>
@@ -993,6 +1652,13 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
                     ["Bollinger", data.weights.wBoll],
                     ["Hisse Haber", data.weights.wStockNews],
                     ["Piyasa Haber", data.weights.wMarketNews],
+                    ["Sektör", data.weights.wSector],
+                    ["Rekabet", data.weights.wCompetition],
+                    ["Yönetim", data.weights.wManagement],
+                    ["Makro", data.weights.wMacro],
+                    ["Temettü", data.weights.wDividend],
+                    ["KAP/Olay", data.weights.wFilings],
+                    ["Akış", data.weights.wFlow],
                   ].map(([lbl, w]) => (
                     <span key={lbl} className="font-mono text-[11px] px-2 py-0.5 rounded"
                       style={{ background: C.panelAlt, color: C.muted }}>
@@ -1015,6 +1681,13 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               </div>
               <NewsPanel news={news} loading={newsLoading} />
             </div>
+          )}
+
+          {activeTab === "prediction" && (
+            <PredictionPerformancePanel
+              forecast={data.forecast}
+              predictionRecords={predictionRecords || []}
+            />
           )}
 
           {/* Portföy */}
@@ -1601,6 +2274,8 @@ export default function SinyalMasasi() {
   const [errorMap, setErrorMap] = useState({});
   const [newsMap, setNewsMap] = useState({});
   const [newsLoadingMap, setNewsLoadingMap] = useState({});
+  const [companyMap, setCompanyMap] = useState({});
+  const [marketContext, setMarketContext] = useState(null);
   const [usdTry, setUsdTry] = useState(null);
   const [detailSymbol, setDetailSymbol] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1616,6 +2291,7 @@ export default function SinyalMasasi() {
   }));
   const [perfSnapshots, setPerfSnapshots] = useState(() => lsGet("sm_perf_snapshots", { months: {}, years: {} }));
   const [monthlyHistory, setMonthlyHistory] = useState(() => lsGet("sm_monthly_history", {}));
+  const [predictionLedger, setPredictionLedger] = useState(() => lsGet("sm_prediction_ledger", {}));
 
   // Hedef fiyatlar localStorage'dan
   const [targets, setTargets] = useState(() => lsGet("sm_targets", {}));
@@ -1625,6 +2301,9 @@ export default function SinyalMasasi() {
   const mounted = useRef(true);
   const refreshInFlight = useRef(false);
   const latestNewsRef = useRef({});
+  const latestCompanyRef = useRef({});
+  const marketContextRef = useRef(null);
+  const predictionLedgerRef = useRef({});
 
   // Stocks değiştikçe kaydet
   useEffect(() => { lsSet("sm_stocks", stocks); }, [stocks]);
@@ -1635,7 +2314,11 @@ export default function SinyalMasasi() {
   useEffect(() => { lsSet("sm_net_targets", netTargetSettings); }, [netTargetSettings]);
   useEffect(() => { lsSet("sm_perf_snapshots", perfSnapshots); }, [perfSnapshots]);
   useEffect(() => { lsSet("sm_monthly_history", monthlyHistory); }, [monthlyHistory]);
+  useEffect(() => { lsSet("sm_prediction_ledger", predictionLedger); }, [predictionLedger]);
   useEffect(() => { latestNewsRef.current = newsMap; }, [newsMap]);
+  useEffect(() => { latestCompanyRef.current = companyMap; }, [companyMap]);
+  useEffect(() => { marketContextRef.current = marketContext; }, [marketContext]);
+  useEffect(() => { predictionLedgerRef.current = predictionLedger; }, [predictionLedger]);
 
   const handleTargetChange = (symbol, key, value) => {
     setTargets((prev) => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), [key]: value } }));
@@ -1660,25 +2343,50 @@ export default function SinyalMasasi() {
     setNetTargetSettings((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  const packageAndStore = useCallback((symbol, hist, stockNewsSentiment = 0, marketNewsSentiment = 0, isDemo = false) => {
-    const packaged = { ...packageHistory(hist, stockNewsSentiment, marketNewsSentiment), isDemo };
+  const packageAndStore = useCallback((stock, hist, options = {}) => {
+    const {
+      stockNewsSentiment = 0,
+      marketNewsSentiment = 0,
+      company = null,
+      market = null,
+      isDemo = false,
+    } = options;
+    const learningRecords = predictionLedgerRef.current[stock.symbol] || [];
+    const packaged = {
+      ...packageHistory(hist, {
+        stock,
+        company,
+        market,
+        stockNewsSentiment,
+        marketNewsSentiment,
+        learningRecords,
+      }),
+      isDemo,
+    };
     if (!mounted.current) return;
-    setDataMap((m) => ({ ...m, [symbol]: packaged }));
-    setStatusMap((m) => ({ ...m, [symbol]: "ready" }));
+    setDataMap((m) => ({ ...m, [stock.symbol]: packaged }));
+    setStatusMap((m) => ({ ...m, [stock.symbol]: "ready" }));
+    setPredictionLedger((prev) => {
+      const current = prev[stock.symbol] || [];
+      const next = reconcilePredictionRecords(current, packaged, stock.symbol);
+      if (JSON.stringify(current) === JSON.stringify(next)) return prev;
+      return { ...prev, [stock.symbol]: next };
+    });
   }, []);
 
-  const loadStock = useCallback(async (stock, { includeNews = true } = {}) => {
+  const loadStock = useCallback(async (stock, { includeNews = true, marketSnapshot = null } = {}) => {
     setStatusMap((m) => ({ ...m, [stock.symbol]: "loading" }));
     setErrorMap((m) => ({ ...m, [stock.symbol]: null }));
     if (includeNews) setNewsLoadingMap((m) => ({ ...m, [stock.symbol]: true }));
     try {
       let hist;
       let newsResult = latestNewsRef.current[stock.symbol] || null;
+      let companyResult = latestCompanyRef.current[stock.symbol] || null;
       if (includeNews) {
-        // Hisse verisi ve haberleri paralel çek
-        [hist, newsResult] = await Promise.all([
+        [hist, newsResult, companyResult] = await Promise.all([
           fetchStockHistory(stock.yahoo),
           fetchNews(stock.yahoo),
+          fetchCompany(stock.yahoo),
         ]);
       } else {
         hist = await fetchStockHistory(stock.yahoo);
@@ -1690,14 +2398,19 @@ export default function SinyalMasasi() {
           latestNewsRef.current = next;
           return next;
         });
+        setCompanyMap((m) => {
+          const next = { ...m, [stock.symbol]: companyResult };
+          latestCompanyRef.current = next;
+          return next;
+        });
       }
-      packageAndStore(
-        stock.symbol,
-        hist,
-        newsResult?.avgSentiment || 0,
-        newsResult?.market?.avgSentiment || 0,
-        false
-      );
+      packageAndStore(stock, hist, {
+        stockNewsSentiment: newsResult?.avgSentiment || 0,
+        marketNewsSentiment: newsResult?.market?.avgSentiment || 0,
+        company: companyResult,
+        market: marketSnapshot || marketContextRef.current,
+        isDemo: false,
+      });
     } catch (e) {
       if (!mounted.current) return;
       setErrorMap((m) => ({ ...m, [stock.symbol]: e.message || "Veri alınamadı" }));
@@ -1714,7 +2427,13 @@ export default function SinyalMasasi() {
     const basePrices = { BIMAS: 490, BINHO: 9.5, EBEBK: 60 };
     const base = basePrices[symbol] || 100;
     const hist = generateDemoHistory(base);
-    packageAndStore(symbol, hist, 0, 0, true);
+    packageAndStore(stock, hist, {
+      stockNewsSentiment: 0,
+      marketNewsSentiment: 0,
+      company: latestCompanyRef.current[symbol] || null,
+      market: marketContextRef.current,
+      isDemo: true,
+    });
     setErrorMap((m) => ({ ...m, [symbol]: null }));
   }, [stocks, packageAndStore]);
 
@@ -1722,10 +2441,11 @@ export default function SinyalMasasi() {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     try {
-      await Promise.all(stocks.map((stock) => loadStock(stock, { includeNews })));
-      const fxRate = await fetchUsdTry();
+      const [fxRate, marketSnapshot] = await Promise.all([fetchUsdTry(), fetchMarketContext()]);
+      await Promise.all(stocks.map((stock) => loadStock(stock, { includeNews, marketSnapshot })));
       if (!mounted.current) return;
       setUsdTry(fxRate);
+      setMarketContext(marketSnapshot);
       setLastUpdate(new Date());
     } finally {
       refreshInFlight.current = false;
@@ -1755,6 +2475,8 @@ export default function SinyalMasasi() {
     setStocks((prev) => prev.filter((s) => s.symbol !== symbol));
     setDataMap((m) => { const n = { ...m }; delete n[symbol]; return n; });
     setStatusMap((m) => { const n = { ...m }; delete n[symbol]; return n; });
+    setCompanyMap((m) => { const n = { ...m }; delete n[symbol]; return n; });
+    setPredictionLedger((m) => { const n = { ...m }; delete n[symbol]; return n; });
   };
 
   const items = stocks.map((stock) => ({ stock, data: dataMap[stock.symbol] }));
@@ -1922,6 +2644,7 @@ export default function SinyalMasasi() {
           newsLoading={newsLoadingMap[detailSymbol]}
           manualTargets={detailManualTargets}
           resolvedTargets={detailResolvedTargets}
+          predictionRecords={predictionLedger[detailSymbol] || []}
           onTargetChange={handleTargetChange}
           onTargetReset={handleTargetReset}
           portfolio={portfolio}
