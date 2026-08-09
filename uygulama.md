@@ -214,7 +214,7 @@ Model pipeline'ı için ayrı, elle uygulanan bir migration seti kullanılır (m
 
 - `stocks` — hisse listesi (sembol, ad, sektör, çekirdek hisse mi)
 - `prices` — günlük OHLCV fiyatları
-- `features` — hesaplanmış teknik özellikler (SMA/RSI/MACD/Bollinger/OBV/rejim/oynaklık/göreli güç)
+- `features` — hesaplanmış teknik özellikler (SMA/RSI/MACD/Bollinger/OBV/rejim/oynaklık/göreli güç) + bağlam verisi (`news_sentiment`, `fundamental_pe`, `fundamental_growth`, `market_trend` — `db/migrations/003_context_features.sql`, bkz. not aşağıda)
 - `model_scores` — model bazlı ham skorlar (`technical` / `volatility` / `relative_strength`)
 - `final_signals` — ensemble sonucu final skor, sinyal, rejim, ağırlıklar, onay durumu
 - `model_performance` — model başına son 60 günlük isabet oranı
@@ -227,6 +227,12 @@ Model pipeline'ı için ayrı, elle uygulanan bir migration seti kullanılır (m
 - **Cache / snapshot verileri** → `market_snapshots`
 - **Arka plan cron logları (Vercel)** → `job_runs`
 - **Model pipeline verisi ve logu (GitHub Actions)** → `final_signals`, `model_scores`, `features`, `pipeline_runs` vb.
+
+### Bağlam verisi toplama notu (news_sentiment / fundamental_pe / fundamental_growth / market_trend)
+
+- Bu 4 alan, Madde 5 (öğrenilmiş meta-model) için ileride kullanılmak üzere `daily_pipeline.py` tarafından her gün toplanır (`scripts/lib/fetch_news.py`, `fetch_company.py`, `fetch_market.py`). **Mevcut sinyal mantığını hiç etkilemez** — sadece veri biriktirir.
+- `scripts/backfill.py` bu alanları geriye dönük doldurmaz (haber/temel veri geçmişi mevcut değil); geçmiş satırlar kalıcı olarak NULL kalır. `upsert_features` bu 4 alan için `COALESCE(EXCLUDED.x, features.x)` kullanır, yani backfill'in periyodik yeniden hesaplaması pipeline'ın yazdığı güncel değerleri asla ezmez.
+- `fundamental_pe` / `fundamental_growth` şu an **pratikte hep NULL** kalıyor: Yahoo Finance, `quoteSummary`/`quote` endpoint'lerine artık sunucu-taraflı isteklerde crumb/oturum çerezi zorunlu kılıyor ve bu çerez basit bir `requests` isteğiyle hiç set edilmiyor (401 Unauthorized). `news_sentiment` (RSS tabanlı) ve `market_trend` (chart endpoint tabanlı, `XU100.IS` sembolü — `^XU100` boş veri dönüyor) sorunsuz çalışıyor. `fetch_company.py` try/except ile zarifçe None dönüyor; pipeline etkilenmiyor.
 
 ### DB adresi notu
 

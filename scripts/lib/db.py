@@ -67,19 +67,24 @@ def upsert_features(rows):
                 """
                 INSERT INTO features
                   (symbol, date, sma20, sma50, rsi, macd_hist, bollinger_pos,
-                   obv, obv_signal, regime, volatility, rel_strength)
+                   obv, obv_signal, regime, volatility, rel_strength,
+                   news_sentiment, fundamental_pe, fundamental_growth, market_trend)
                 VALUES %s
                 ON CONFLICT (symbol, date) DO UPDATE SET
-                  sma20         = EXCLUDED.sma20,
-                  sma50         = EXCLUDED.sma50,
-                  rsi           = EXCLUDED.rsi,
-                  macd_hist     = EXCLUDED.macd_hist,
-                  bollinger_pos = EXCLUDED.bollinger_pos,
-                  obv           = EXCLUDED.obv,
-                  obv_signal    = EXCLUDED.obv_signal,
-                  regime        = EXCLUDED.regime,
-                  volatility    = EXCLUDED.volatility,
-                  rel_strength  = EXCLUDED.rel_strength
+                  sma20              = EXCLUDED.sma20,
+                  sma50              = EXCLUDED.sma50,
+                  rsi                = EXCLUDED.rsi,
+                  macd_hist          = EXCLUDED.macd_hist,
+                  bollinger_pos      = EXCLUDED.bollinger_pos,
+                  obv                = EXCLUDED.obv,
+                  obv_signal         = EXCLUDED.obv_signal,
+                  regime             = EXCLUDED.regime,
+                  volatility         = EXCLUDED.volatility,
+                  rel_strength       = EXCLUDED.rel_strength,
+                  news_sentiment     = COALESCE(EXCLUDED.news_sentiment, features.news_sentiment),
+                  fundamental_pe     = COALESCE(EXCLUDED.fundamental_pe, features.fundamental_pe),
+                  fundamental_growth = COALESCE(EXCLUDED.fundamental_growth, features.fundamental_growth),
+                  market_trend       = COALESCE(EXCLUDED.market_trend, features.market_trend)
                 """,
                 [
                     (
@@ -89,6 +94,8 @@ def upsert_features(rows):
                         r.get("obv"), r.get("obv_signal"),
                         r.get("regime"), r.get("volatility"),
                         r.get("rel_strength"),
+                        r.get("news_sentiment"), r.get("fundamental_pe"),
+                        r.get("fundamental_growth"), r.get("market_trend"),
                     )
                     for r in rows
                 ],

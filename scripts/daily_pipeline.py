@@ -21,6 +21,9 @@ from lib.regime        import estimate_volatility, detect_regime, volatility_sco
 from lib.relative_strength import relative_strength_score
 from lib.ensemble      import combine_scores, signal_from_score, apply_confirmation_filter
 from lib.performance   import compute_hit_rate, compute_model_return_metrics
+from lib.fetch_news    import fetch_news_sentiment
+from lib.fetch_company import fetch_company_fundamentals
+from lib.fetch_market  import fetch_market_context
 
 # ── Hisse tanımları ────────────────────────────────────────────────────────────
 CORE_STOCKS = [
@@ -52,6 +55,14 @@ def run_pipeline():
             except Exception as e:
                 print(f"  {psym} emsal veri hatası (görmezden gelindi): {e}")
                 peer_closes[psym] = []
+
+        # Piyasa bağlamı (XU100) run başına bir kez çekilir, sembol bağımsızdır.
+        print("Piyasa bağlamı çekiliyor...")
+        try:
+            market_ctx = fetch_market_context()
+        except Exception as e:
+            print(f"  Piyasa bağlamı hatası (görmezden gelindi): {e}")
+            market_ctx = {"xu100_change_20d": None}
 
         for stock in CORE_STOCKS:
             symbol = stock["symbol"]
@@ -98,20 +109,39 @@ def run_pipeline():
                 peers_data = [peer_closes.get(p, []) for p in peer_syms if peer_closes.get(p)]
                 rel_str    = relative_strength_score(closes, peers_data, window=20)
 
+                # Haber sentimenti + temel veri — Madde 5 (öğrenilmiş meta-model)
+                # için veri biriktirir, mevcut sinyal mantığını etkilemez. Her biri
+                # ayrı try/except: biri başarısız olursa diğerlerini engellemesin.
+                try:
+                    news_sentiment = fetch_news_sentiment(yahoo)
+                except Exception as e:
+                    print(f"   Haber sentimenti hatası (görmezden gelindi): {e}")
+                    news_sentiment = None
+
+                try:
+                    fundamentals = fetch_company_fundamentals(yahoo)
+                except Exception as e:
+                    print(f"   Temel veri hatası (görmezden gelindi): {e}")
+                    fundamentals = {"trailing_pe": None, "revenue_growth": None}
+
                 # Features kaydı
                 feat = {
-                    "symbol":        symbol,
-                    "date":          today,
-                    "sma20":         sma20[last],
-                    "sma50":         sma50[last],
-                    "rsi":           rsi[last],
-                    "macd_hist":     macd["hist"][last],
-                    "bollinger_pos": boll["pos"][last],
-                    "obv":           obv["obv"][last],
-                    "obv_signal":    obv["signal"][last],
-                    "regime":        regime,
-                    "volatility":    volatility,
-                    "rel_strength":  rel_str,
+                    "symbol":            symbol,
+                    "date":              today,
+                    "sma20":             sma20[last],
+                    "sma50":             sma50[last],
+                    "rsi":               rsi[last],
+                    "macd_hist":         macd["hist"][last],
+                    "bollinger_pos":     boll["pos"][last],
+                    "obv":               obv["obv"][last],
+                    "obv_signal":        obv["signal"][last],
+                    "regime":            regime,
+                    "volatility":        volatility,
+                    "rel_strength":      rel_str,
+                    "news_sentiment":    news_sentiment,
+                    "fundamental_pe":    fundamentals.get("trailing_pe"),
+                    "fundamental_growth": fundamentals.get("revenue_growth"),
+                    "market_trend":      market_ctx.get("xu100_change_20d"),
                 }
                 upsert_features([feat])
 
