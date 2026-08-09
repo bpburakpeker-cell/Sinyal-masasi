@@ -21,13 +21,23 @@ function getStorage() {
   return window.localStorage;
 }
 
+function createUserId() {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    return `sm_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  }
+  return `sm_${Date.now()}_${typeof performance !== "undefined" ? Math.round(performance.now()) : Date.now()}`;
+}
+
 export function getOrCreateUserId() {
   const storage = getStorage();
   if (!storage) return null;
   const existing = storage.getItem("sm_user_id");
   if (existing) return existing;
-  const created = globalThis.crypto?.randomUUID?.()
-    || `sm_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const created = createUserId();
   storage.setItem("sm_user_id", created);
   return created;
 }
