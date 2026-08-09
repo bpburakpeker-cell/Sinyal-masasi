@@ -47,3 +47,43 @@ def compute_hit_rate(signal_rows, price_rows, lookahead=1):
         return None, total
 
     return round(hits / total * 100, 1), total
+
+
+def compute_model_return_metrics(score_hist, price_hist, buy=25, sell=-25):
+    """
+    Bir modelin KENDİ skorundan türetilen AL sinyaliyle pozisyona girip,
+    sinyal AL olmaktan çıkınca çıkarak gerçekleşen ortalama getiriyi ölçer.
+    Bu, compute_hit_rate'in ölçtüğü "yön doğru muydu"dan farklı olarak,
+    gerçekte ne kadar kazandırdığını (veya kaybettirdiğini) gösterir.
+
+    score_hist : [{ "date": date, "score": float }, ...]   (tarih artan)
+    price_hist : [{ "date": date, "close": float }, ...]   (tarih artan)
+
+    Döner: (avg_return_pct, trade_count) — hiç kapanmış işlem yoksa (None, 0)
+    """
+    price_map = {r["date"]: r["close"] for r in price_hist}
+    score_map = {r["date"]: r["score"] for r in score_hist}
+    dates_sorted = sorted(price_map.keys())
+
+    in_position = False
+    entry_price = None
+    returns = []
+
+    for d in dates_sorted:
+        score = score_map.get(d)
+        if score is None:
+            continue
+        price = price_map[d]
+        signal = "AL" if score >= buy else ("SAT" if score <= sell else "BEKLE")
+
+        if not in_position and signal == "AL":
+            in_position = True
+            entry_price = price
+        elif in_position and signal != "AL":
+            returns.append((price - entry_price) / entry_price * 100)
+            in_position = False
+            entry_price = None
+
+    if not returns:
+        return None, 0
+    return round(sum(returns) / len(returns), 2), len(returns)

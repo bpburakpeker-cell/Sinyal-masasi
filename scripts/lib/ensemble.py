@@ -20,6 +20,20 @@ TRUST_SENSITIVITY = 1.0    # (hit_rate - 50) / 100 * TRUST_SENSITIVITY
 TRUST_MAX_DEVIATION = 0.30  # çarpan [0.70, 1.30] aralığına sıkıştırılır
 TRUST_MIN_SAMPLE = 5        # bu örneklemin altında veri "yetersiz" sayılır, çarpan nötr kalır
 
+# Bayes (Beta-Binom) küçültmesi: ham hit_rate yerine, %50'de nötr bir prior'a
+# doğru çekilmiş bir tahmin kullanılır. k = sanal gözlem sayısı — n küçükken
+# (ör. n=6, %16.7) tahmini şansa yakın tutar; n büyüdükçe ham orana yaklaşır.
+# Bu olmadan küçük örneklemler gerçekte kanıtlanmamış performansa göre orantısız
+# ağırlık kazanıp/kaybediyordu.
+TRUST_PRIOR_STRENGTH = 10
+
+
+def _shrink_hit_rate(hit_rate_pct, sample_size, k=TRUST_PRIOR_STRENGTH):
+    """Ham isabet yüzdesini örneklem büyüklüğüne duyarlı şekilde %50'ye doğru küçültür."""
+    wins = hit_rate_pct / 100.0 * sample_size
+    shrunk = (wins + k * 0.5) / (sample_size + k)
+    return shrunk * 100.0
+
 
 def compute_trust_multipliers(performance):
     """
@@ -27,7 +41,8 @@ def compute_trust_multipliers(performance):
     Döner: { model_key: float }  — 1.0 nötr, >1.0 daha fazla güven, <1.0 daha az güven.
 
     Veri yetersizken (örneklem < TRUST_MIN_SAMPLE veya hit_rate yok) modele
-    müdahale edilmez — rejim tablosundaki ağırlık aynen kullanılır.
+    müdahale edilmez — rejim tablosundaki ağırlık aynen kullanılır. Yeterli
+    örneklemde bile ham oran yerine küçültülmüş (shrunk) oran kullanılır.
     """
     performance = performance or {}
     multipliers = {}
@@ -37,7 +52,8 @@ def compute_trust_multipliers(performance):
         if hit_rate is None or sample_size < TRUST_MIN_SAMPLE:
             multipliers[model_key] = 1.0
             continue
-        deviation = max(-TRUST_MAX_DEVIATION, min(TRUST_MAX_DEVIATION, (hit_rate - 50) / 100 * TRUST_SENSITIVITY))
+        shrunk_pct = _shrink_hit_rate(hit_rate, sample_size)
+        deviation = max(-TRUST_MAX_DEVIATION, min(TRUST_MAX_DEVIATION, (shrunk_pct - 50) / 100 * TRUST_SENSITIVITY))
         multipliers[model_key] = 1.0 + deviation
     return multipliers
 
@@ -76,12 +92,22 @@ def signal_from_score(score):
 
 def apply_confirmation_filter(signal, recent_signals):
     """
-    Sinyal tutarlılık filtresi: son 3 günün sinyali tutarsızsa BEKLE'ye çek.
-    recent_signals: son 3 günün sinyal listesi (eski→yeni, örn. ['AL','AL','SAT'])
+    Sinyal tutarlılık filtresi: son 3 günün (bugün + önceki 2 gün) sinyali
+    tutarsızsa BEKLE'ye çek.
+
+    ÖNEMLİ: recent_signals, önceki günlerin HAM (filtrelenmemiş) sinyalleri
+    olmalı — ONAYLANMIŞ/filtrelenmiş sinyal değil. Onaylanmış sinyal
+    beslenirse, iki gün üst üste BEKLE çıktığında sistem sonsuza kadar
+    BEKLE'de kilitlenir (BEKLE kendi kendini doğrulayan bir tuzağa döner,
+    çünkü sonraki günün penceresi de en az bir BEKLE içerir ve asla "hepsi
+    aynı" olamaz). Bu yüzden çağıranlar ham sinyal geçmişini ayrıca tutmalı.
+
+    recent_signals: önceki günlerin HAM sinyal listesi (eski→yeni); fonksiyon
+    bunun sadece son 2 elemanını kullanır.
     signal: bugünkü ham sinyal
     """
-    if len(recent_signals) < 3:
-        return signal, False   # yeterli geçmiş yok — filtreleme yok
+    if len(recent_signals) < 2:
+        return signal, False   # yeterli geçmiş yok (< 2 önceki gün) — filtreleme yok
 
     # Son 2 gün + bugün
     window = list(recent_signals[-2:]) + [signal]

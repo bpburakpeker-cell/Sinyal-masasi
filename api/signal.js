@@ -57,7 +57,7 @@ export default async function handler(req, res) {
 
       // Model performans
       const perfResult = await client.query(
-        `SELECT model_key, hit_rate_pct, sample_size
+        `SELECT model_key, hit_rate_pct, sample_size, avg_return_pct, trade_count
            FROM model_performance
           WHERE symbol = $1`,
         [symbol],
@@ -66,8 +66,10 @@ export default async function handler(req, res) {
       const perfMap = {};
       perfResult.rows.forEach((r) => {
         perfMap[r.model_key] = {
-          hit_rate_pct: r.hit_rate_pct != null ? parseFloat(r.hit_rate_pct) : null,
-          sample_size:  parseInt(r.sample_size, 10),
+          hit_rate_pct:   r.hit_rate_pct != null ? parseFloat(r.hit_rate_pct) : null,
+          sample_size:    parseInt(r.sample_size, 10),
+          avg_return_pct: r.avg_return_pct != null ? parseFloat(r.avg_return_pct) : null,
+          trade_count:    r.trade_count != null ? parseInt(r.trade_count, 10) : 0,
         };
       });
 
@@ -75,16 +77,18 @@ export default async function handler(req, res) {
       const models = Object.entries(weightMap)
         .map(([key, weightRaw]) => {
           const meta  = MODEL_LABELS[key] || { key, label: key, short: key, description: "" };
-          const perf  = perfMap[key] || { hit_rate_pct: null, sample_size: 0 };
+          const perf  = perfMap[key] || { hit_rate_pct: null, sample_size: 0, avg_return_pct: null, trade_count: 0 };
           const w     = weightRaw != null ? parseFloat(weightRaw) : 0;
           return {
             key,
-            label:       meta.label,
-            short:       meta.short,
-            description: meta.description,
-            weightPct:   Math.round(w * 100),
-            hitRatePct:  perf.hit_rate_pct,
-            sampleSize:  perf.sample_size,
+            label:        meta.label,
+            short:        meta.short,
+            description:  meta.description,
+            weightPct:    Math.round(w * 100),
+            hitRatePct:   perf.hit_rate_pct,
+            sampleSize:   perf.sample_size,
+            avgReturnPct: perf.avg_return_pct,
+            tradeCount:   perf.trade_count,
           };
         })
         .sort((a, b) => b.weightPct - a.weightPct);

@@ -139,19 +139,22 @@ def upsert_final_signal(row):
             )
 
 
-def upsert_model_performance(symbol, model_key, hit_rate_pct, sample_size):
+def upsert_model_performance(symbol, model_key, hit_rate_pct, sample_size, avg_return_pct=None, trade_count=0):
     with transaction() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO model_performance (symbol, model_key, hit_rate_pct, sample_size, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                INSERT INTO model_performance
+                  (symbol, model_key, hit_rate_pct, sample_size, avg_return_pct, trade_count, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (symbol, model_key) DO UPDATE SET
-                  hit_rate_pct = EXCLUDED.hit_rate_pct,
-                  sample_size  = EXCLUDED.sample_size,
-                  updated_at   = NOW()
+                  hit_rate_pct   = EXCLUDED.hit_rate_pct,
+                  sample_size    = EXCLUDED.sample_size,
+                  avg_return_pct = EXCLUDED.avg_return_pct,
+                  trade_count    = EXCLUDED.trade_count,
+                  updated_at     = NOW()
                 """,
-                (symbol, model_key, hit_rate_pct, sample_size),
+                (symbol, model_key, hit_rate_pct, sample_size, avg_return_pct, trade_count),
             )
 
 
@@ -253,6 +256,25 @@ def fetch_recent_model_scores(symbol, model_key, days=60):
             LIMIT %s
             """,
             (symbol, model_key, days),
+        )
+        return cur.fetchall()
+
+
+def fetch_recent_final_scores(symbol, days=2):
+    """Onay filtresi için: son N günün final_score'unu döner (ham sinyali buradan
+    türetmek gerekir — final_signals.signal zaten ONAYLANMIŞ sinyaldir, tutarlılık
+    penceresine onaylıyı değil hamı beslemek gerekir)."""
+    conn = get_connection()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT date, final_score
+            FROM final_signals
+            WHERE symbol = %s
+            ORDER BY date DESC
+            LIMIT %s
+            """,
+            (symbol, days),
         )
         return cur.fetchall()
 

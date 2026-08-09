@@ -18,7 +18,7 @@ from lib.indicators        import technical_score, sma_series, rsi_series, macd_
 from lib.regime            import estimate_volatility, detect_regime, volatility_score
 from lib.relative_strength import relative_strength_score
 from lib.ensemble          import combine_scores, signal_from_score, apply_confirmation_filter
-from lib.performance       import compute_hit_rate
+from lib.performance       import compute_hit_rate, compute_model_return_metrics
 
 CORE_STOCKS = [
     {"symbol": "BIMAS", "yahoo": "BIMAS.IS", "sector": "Perakende"},
@@ -54,7 +54,7 @@ def backfill_symbol(symbol, yahoo, sector, peer_closes):
     feature_rows   = []
     score_rows     = []
     signal_rows_db = []
-    signal_hist    = []   # (date, signal) geçmişi tutarlılık için
+    raw_signal_hist = []   # HAM sinyal geçmişi (tutarlılık filtresi bunu kullanmalı, onaylıyı değil)
 
     warmup = 50
     for i in range(warmup, len(closes)):
@@ -108,9 +108,9 @@ def backfill_symbol(symbol, yahoo, sector, peer_closes):
         # ağırlıkları kullanılır; güven skoru sadece canlı pipeline'da (Faz B).
         final_score, weights = combine_scores(scores, regime)
         raw_signal  = signal_from_score(final_score)
-        recent_sigs = [s for _, s in signal_hist[-2:]]
+        recent_sigs = raw_signal_hist[-2:]
         confirmed_signal, confirmed = apply_confirmation_filter(raw_signal, recent_sigs)
-        signal_hist.append((d, confirmed_signal))
+        raw_signal_hist.append(raw_signal)
 
         signal_rows_db.append({
             "symbol":              symbol,
@@ -156,8 +156,12 @@ def backfill_symbol(symbol, yahoo, sector, peer_closes):
         model_sig_hist = [{"date": r["date"], "signal": signal_from_score(r["score"])} for r in last_60_scores]
         last_60_prices = [{"date": dates[i], "close": closes[i]} for i in range(max(0, len(closes) - 61), len(closes))]
         hit, n = compute_hit_rate(model_sig_hist, last_60_prices)
-        upsert_model_performance(symbol, model_key, hit, n)
-        print(f"  {model_key}: isabet=%{hit}  n={n}")
+
+        score_hist_f = [{"date": r["date"], "score": r["score"]} for r in last_60_scores]
+        avg_return, trade_count = compute_model_return_metrics(score_hist_f, last_60_prices)
+
+        upsert_model_performance(symbol, model_key, hit, n, avg_return, trade_count)
+        print(f"  {model_key}: isabet=%{hit}  n={n}  ort.getiri=%{avg_return}  islem={trade_count}")
 
     print(f"  {symbol} backfill tamamlandı ✓")
 

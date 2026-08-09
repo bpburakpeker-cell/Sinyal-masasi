@@ -59,6 +59,7 @@ export function defaultUserState(defaultStocks) {
     perfSnapshots: { months: {}, years: {} },
     monthlyHistory: {},
     predictionLedger: {},
+    riskProfile: "dengeli",
   };
 }
 
@@ -99,6 +100,7 @@ export function normalizeUserState(candidate, defaultStocks) {
       : defaults.perfSnapshots,
     monthlyHistory: candidate.monthlyHistory && typeof candidate.monthlyHistory === "object" ? candidate.monthlyHistory : defaults.monthlyHistory,
     predictionLedger: candidate.predictionLedger && typeof candidate.predictionLedger === "object" ? candidate.predictionLedger : defaults.predictionLedger,
+    riskProfile: ["muhafazakar", "dengeli", "agresif"].includes(candidate.riskProfile) ? candidate.riskProfile : defaults.riskProfile,
   };
 }
 

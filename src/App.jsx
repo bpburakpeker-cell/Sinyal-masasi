@@ -37,6 +37,32 @@ const REGIME_LABELS = {
   high_volatility: { label: "Yüksek Oynaklık", color: "amber" },
 };
 
+/* ── Risk profilleri: aynı analiz skorunu farklı AL/SAT eşiği + onay
+   penceresiyle yorumlar. Skor üretimini değil, sadece "ne zaman harekete
+   geç" kararını etkiler. confirmDays, api/performance.js'deki onay
+   penceresi replay'iyle birebir eşleşir. ── */
+const RISK_PROFILES = {
+  muhafazakar: { label: "Muhafazakar", buy: 35, sell: -35, confirmDays: 5, desc: "Sadece çok güçlü sinyalde harekete geçer, yanlış alarma karşı sabırlıdır." },
+  dengeli:     { label: "Dengeli",     buy: 25, sell: -25, confirmDays: 3, desc: "Sistemin varsayılan dengesi." },
+  agresif:     { label: "Agresif",     buy: 15, sell: -15, confirmDays: 1, desc: "Daha sık ve daha erken sinyal üretir, yanlış alarm riski artar." },
+};
+
+function signalForProfile(score, profileKey) {
+  const p = RISK_PROFILES[profileKey] || RISK_PROFILES.dengeli;
+  if (score == null || !Number.isFinite(score)) return null;
+  if (score >= p.buy) return "AL";
+  if (score <= p.sell) return "SAT";
+  return "BEKLE";
+}
+
+/* Görünürdeki ana sinyal: backend pipeline verisi varsa (signalData.final_score)
+   seçili risk profiline göre yeniden yorumlanır; yoksa eski istemci-taraf
+   sinyaline (data.signal) geri düşülür. */
+function resolveDisplaySignal(data, signalData, riskProfile) {
+  const fromBackend = signalForProfile(signalData?.final_score, riskProfile);
+  return fromBackend || data?.signal;
+}
+
 const FONT_STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 .font-display { font-family: 'Space Grotesk', sans-serif; }
@@ -876,10 +902,10 @@ async function fetchSignal(symbol) {
 }
 
 /* ── Sepet performansı: Strateji vs Al-ve-Tut (opsiyonel — yoksa null döner) ── */
-async function fetchPerformance(symbols, range) {
+async function fetchPerformance(symbols, range, profile = "dengeli") {
   if (!symbols?.length) return null;
   try {
-    const r = await fetch(`/api/performance?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}`);
+    const r = await fetch(`/api/performance?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}&profile=${profile}`);
     if (!r.ok) return null;
     return await r.json();
   } catch {
@@ -1529,9 +1555,10 @@ function PredictionPerformancePanel({ forecast, predictionRecords = [] }) {
 /* ────────────────────────────────────────────────────────────────
    Detay sayfası
    ────────────────────────────────────────────────────────────── */
-function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, predictionRecords, portfolio, onTargetChange, onTargetReset, onPortfolioChange, onClose, signalData, perf, perfRange, onPerfRangeChange }) {
+function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, predictionRecords, portfolio, onTargetChange, onTargetReset, onPortfolioChange, onClose, signalData, perf, perfRange, onPerfRangeChange, riskProfile, onRiskProfileChange }) {
   const [btAmount, setBtAmount] = useState(10000);
   const [activeTab, setActiveTab] = useState("indicators");
+  const displaySignal = data ? resolveDisplaySignal(data, signalData, riskProfile) : null;
 
   const bt = useMemo(
     () => data ? backtest(data.closes, data.dates, data.scoreSeries, data.warmup, Math.max(btAmount, 1)) : null,
@@ -1578,12 +1605,37 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
             <div>
               <div className="flex items-center gap-2.5 flex-wrap">
                 <h1 className="font-display text-xl font-bold" style={{ color: C.text }}>{stock.symbol}</h1>
-                <SignalBadge signal={data.signal} size="lg" />
+                <SignalBadge signal={displaySignal} size="lg" />
                 <InfoTip text="Sistemin şu anki önerisi. AL: fiyatın yükselme ihtimali güçlü görünüyor. SAT: düşme ihtimali güçlü görünüyor. BEKLE: yön belirsiz, işlem yapmadan önce beklemek daha mantıklı." />
               </div>
               <p className="font-body text-xs mt-0.5" style={{ color: C.muted }}>
                 {stock.name} · {stock.sector}
               </p>
+              {signalData?.final_score != null && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-2.5">
+                  {Object.entries(RISK_PROFILES).map(([key, p]) => {
+                    const sig = signalForProfile(signalData.final_score, key);
+                    const sigColor = sig === "AL" ? C.green : sig === "SAT" ? C.red : C.amber;
+                    const active = key === riskProfile;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => onRiskProfileChange(key)}
+                        className="sm-focus font-mono text-[10.5px] px-2 py-1 rounded-full flex items-center gap-1.5"
+                        style={{
+                          background: active ? C.amber + "18" : C.panelAlt,
+                          border: `1px solid ${active ? C.amber + "55" : C.border}`,
+                          color: active ? C.amber : C.muted,
+                        }}
+                      >
+                        {p.label}
+                        <span style={{ color: sigColor, fontWeight: 700 }}>{sig}</span>
+                      </button>
+                    );
+                  })}
+                  <InfoTip text="Aynı analiz skoru, farklı risk profillerinde farklı bir öneriye dönüşebilir. Seçili profiliniz vurgulu; diğer chip'lere tıklayarak profilinizi değiştirebilirsiniz." />
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -2342,6 +2394,11 @@ function ModelLeaderCards({ models, regime }) {
                 style={{ color: m.hitRatePct != null ? (m.hitRatePct >= 55 ? C.green : C.muted) : C.faint }}
               >
                 {m.hitRatePct != null ? `%${m.hitRatePct} isabet` : `veri birikiyor (${m.sampleSize}/60)`}
+                {m.avgReturnPct != null && (
+                  <span style={{ color: m.avgReturnPct >= 0 ? C.green : C.red }}>
+                    {" · "}{m.avgReturnPct >= 0 ? "+" : ""}{m.avgReturnPct}% ort. getiri
+                  </span>
+                )}
               </span>
             </div>
           </div>
@@ -2466,9 +2523,47 @@ function PortfolioPerformanceCard({ perf, range, onRangeChange, onSelectStock })
 }
 
 /* ────────────────────────────────────────────────────────────────
+   Risk Profili — aynı analiz skorunun ne zaman harekete geçirileceğini
+   belirleyen karar katmanı (skor üretimini değil, eşiği/onay penceresini
+   etkiler)
+   ────────────────────────────────────────────────────────────── */
+function RiskProfileCard({ riskProfile, onChange }) {
+  const active = RISK_PROFILES[riskProfile] || RISK_PROFILES.dengeli;
+  return (
+    <div className="rounded-xl p-4 mt-5" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+      <div className="font-display text-sm font-semibold mb-3 flex items-center" style={{ color: C.text }}>
+        🎚️ Risk Profili
+        <InfoTip text="Ne kadar sinyal beklediğinizi ve ne kadar hızlı tepki vermek istediğinizi belirler. Muhafazakar: az ama güçlü sinyalde harekete geçer. Agresif: daha sık, daha erken sinyal üretir ama yanlış alarm riski de artar. Analiz skorunun kendisi değişmez — sadece o skoru ne zaman 'harekete geçilir' saydığınız değişir." />
+      </div>
+      <div className="grid sm:grid-cols-3 grid-cols-1 gap-2 mb-3">
+        {Object.entries(RISK_PROFILES).map(([key, p]) => (
+          <button
+            key={key}
+            onClick={() => onChange(key)}
+            className="sm-focus text-left rounded-lg p-2.5"
+            style={{
+              background: key === riskProfile ? C.amber + "18" : C.panelAlt,
+              border: `1px solid ${key === riskProfile ? C.amber + "55" : C.border}`,
+            }}
+          >
+            <div className="font-body text-xs font-bold" style={{ color: key === riskProfile ? C.amber : C.text }}>{p.label}</div>
+            <div className="font-body text-[10px] mt-0.5" style={{ color: C.faint }}>{p.desc}</div>
+          </button>
+        ))}
+      </div>
+      <div className="font-mono text-[10.5px] pt-2.5" style={{ color: C.muted, borderTop: `1px solid ${C.border}` }}>
+        AL/SAT eşiği: <span style={{ color: C.text }}>±{active.buy}</span>
+        {"  ·  "}Onay penceresi: <span style={{ color: C.text }}>{active.confirmDays} gün</span>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
    Hisse kartı
    ────────────────────────────────────────────────────────────── */
-function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRemove, usdTry, manualTargets, resolvedTargets, signalData }) {
+function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRemove, usdTry, manualTargets, resolvedTargets, signalData, riskProfile }) {
+  const displaySignal = data ? resolveDisplaySignal(data, signalData, riskProfile) : null;
   const tgt = resolvedTargets || {};
   const manual = manualTargets || {};
   const manualBuy = manual.buy != null && String(manual.buy).trim() !== "";
@@ -2476,13 +2571,13 @@ function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRe
 
   const targetLine = () => {
     if (!data) return null;
-    if (data.signal === "AL" && tgt.buy) {
+    if (displaySignal === "AL" && tgt.buy) {
       return <span className="font-mono text-[11px]" style={{ color: C.green }}>Alım hedefi{manualBuy ? " (manuel)" : ""}: {tgt.buy} TL</span>;
     }
-    if (data.signal === "BEKLE" && tgt.waitLower && tgt.waitUpper) {
+    if (displaySignal === "BEKLE" && tgt.waitLower && tgt.waitUpper) {
       return <span className="font-mono text-[11px]" style={{ color: C.amber }}>Bekle bandı: {tgt.waitLower}–{tgt.waitUpper} TL</span>;
     }
-    if (data.signal === "SAT" && tgt.sell) {
+    if (displaySignal === "SAT" && tgt.sell) {
       return <span className="font-mono text-[11px]" style={{ color: C.red }}>Satış hedefi{manualSell ? " (manuel)" : ""}: {tgt.sell} TL</span>;
     }
     return null;
@@ -2556,7 +2651,7 @@ function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRe
 
           <div className="flex items-center justify-between mt-3">
             <div className="flex flex-col gap-1">
-              <SignalBadge signal={data.signal} />
+              <SignalBadge signal={displaySignal} />
               {targetLine()}
               {signalData?.models?.[0] && (
                 <div className="font-mono text-[10px] mt-0.5 inline-flex items-center gap-1" style={{ color: C.faint }}>
@@ -2616,7 +2711,7 @@ function TickerStrip({ items, usdTry }) {
 /* ────────────────────────────────────────────────────────────────
    Portföy özet tablosu
    ────────────────────────────────────────────────────────────── */
-function PortfolioSummary({ items, portfolio, onSelectStock }) {
+function PortfolioSummary({ items, portfolio, onSelectStock, signalMap, riskProfile }) {
   const rows = items.filter((it) => it.data && portfolio[it.stock.symbol]?.lots && portfolio[it.stock.symbol]?.cost);
   if (!rows.length) return null;
 
@@ -2653,7 +2748,7 @@ function PortfolioSummary({ items, portfolio, onSelectStock }) {
                     {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
                   </div>
                 </div>
-                <SignalBadge signal={data.signal} />
+                <SignalBadge signal={resolveDisplaySignal(data, signalMap?.[stock.symbol], riskProfile)} />
               </div>
             </button>
           );
@@ -2876,6 +2971,7 @@ export default function SinyalMasasi() {
   const [pipelineStatus, setPipelineStatus] = useState(null); // bayat veri uyarısı
   const [portfolioPerf, setPortfolioPerf] = useState(null);   // Strateji vs Al-ve-Tut (sepet)
   const [portfolioPerfRange, setPortfolioPerfRange] = useState("year");
+  const [riskProfile, setRiskProfile] = useState("dengeli");   // muhafazakar | dengeli | agresif
   const [targets, setTargets] = useState({});
   const [portfolio, setPortfolio] = useState({});
   const [userId, setUserId] = useState(null);
@@ -2917,6 +3013,7 @@ export default function SinyalMasasi() {
       setPerfSnapshots(state.perfSnapshots);
       setMonthlyHistory(state.monthlyHistory);
       setPredictionLedger(state.predictionLedger);
+      setRiskProfile(state.riskProfile);
       stateHydratedRef.current = true;
       setUserStateReady(true);
     }).catch(() => {
@@ -2938,6 +3035,7 @@ export default function SinyalMasasi() {
       perfSnapshots,
       monthlyHistory,
       predictionLedger,
+      riskProfile,
     };
     saveTimeoutRef.current = setTimeout(() => {
       saveUserState(userId, state)
@@ -2957,6 +3055,7 @@ export default function SinyalMasasi() {
     perfSnapshots,
     monthlyHistory,
     predictionLedger,
+    riskProfile,
   ]);
 
   const handleTargetChange = (symbol, key, value) => {
@@ -3121,11 +3220,11 @@ export default function SinyalMasasi() {
   useEffect(() => {
     if (!userStateReady || !stocks.length) return;
     let cancelled = false;
-    fetchPerformance(stocks.map((s) => s.symbol), portfolioPerfRange).then((p) => {
+    fetchPerformance(stocks.map((s) => s.symbol), portfolioPerfRange, riskProfile).then((p) => {
       if (!cancelled && p) setPortfolioPerf(p);
     });
     return () => { cancelled = true; };
-  }, [stocks, portfolioPerfRange, userStateReady]);
+  }, [stocks, portfolioPerfRange, riskProfile, userStateReady]);
 
   const addStock = (newStock) => {
     if (stocks.find((s) => s.symbol === newStock.symbol)) return;
@@ -3317,6 +3416,8 @@ export default function SinyalMasasi() {
           perf={portfolioPerf}
           perfRange={portfolioPerfRange}
           onPerfRangeChange={setPortfolioPerfRange}
+          riskProfile={riskProfile}
+          onRiskProfileChange={setRiskProfile}
         />
       )}
 
@@ -3404,6 +3505,7 @@ export default function SinyalMasasi() {
               manualTargets={targets[stock.symbol] || {}}
               resolvedTargets={data ? resolveDisplayedTargets(data.suggestedTargets, targets[stock.symbol] || {}) : {}}
               signalData={signalMap[stock.symbol] || null}
+              riskProfile={riskProfile}
             />
           ))}
 
@@ -3419,7 +3521,9 @@ export default function SinyalMasasi() {
         </div>
 
         {/* Portföy özeti */}
-        <PortfolioSummary items={items} portfolio={portfolio} onSelectStock={setDetailSymbol} />
+        <PortfolioSummary items={items} portfolio={portfolio} onSelectStock={setDetailSymbol} signalMap={signalMap} riskProfile={riskProfile} />
+
+        <RiskProfileCard riskProfile={riskProfile} onChange={setRiskProfile} />
 
         <NetTargetPanel
           settings={netTargetSettings}

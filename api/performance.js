@@ -17,6 +17,49 @@ const pool = process.env.DATABASE_URL
 const RANGE_DAYS = { week: 7, month: 30, year: 365 };
 const MIN_TRADES_FOR_HIT_RATE = 5;
 
+// Risk profilleri: aynı final_score'u farklı eşik + onay penceresiyle yorumlar.
+// src/App.jsx'teki RISK_PROFILES ile birebir eşleşir.
+const PROFILES = {
+  muhafazakar: { buy: 35, sell: -35, confirmDays: 5 },
+  dengeli:     { buy: 25, sell: -25, confirmDays: 3 },
+  agresif:     { buy: 15, sell: -15, confirmDays: 1 },
+};
+// Onay penceresi replay'i için, istenen aralıktan önce ek geçmiş çekilir
+// (Muhafazakar'ın 5 günlük penceresini doğru seed edebilmek için).
+const LOOKBACK_BUFFER_DAYS = 15;
+
+function signalFromScore(score, buy, sell) {
+  if (score >= buy) return "AL";
+  if (score <= sell) return "SAT";
+  return "BEKLE";
+}
+
+/**
+ * Python'daki apply_confirmation_filter'ın genelleştirilmiş hali (3 yerine N gün).
+ * windowDays=1 → filtresiz (Agresif'in "daha hızlı tepki" vaadi doğal olarak sağlanır).
+ *
+ * ÖNEMLİ: priorRaw, önceki günlerin HAM sinyalleri olmalı — onaylanmış değil.
+ * Onaylanmış sinyal beslenirse, iki gün üst üste BEKLE çıktığında sistem
+ * sonsuza kadar BEKLE'de kilitlenir (kendini doğrulayan bir tuzak).
+ */
+function applyConfirmationFilter(rawSignal, priorRaw, windowDays) {
+  if (windowDays <= 1) return rawSignal;
+  if (priorRaw.length < windowDays - 1) return rawSignal;
+  const window = priorRaw.slice(-(windowDays - 1)).concat([rawSignal]);
+  return window.every((s) => s === window[0]) ? rawSignal : "BEKLE";
+}
+
+/** final_score geçmişinden, profile özgü eşik + onay penceresiyle günlük onaylı sinyal serisi üretir. */
+function deriveConfirmedSignals(scoreRows, profileCfg) {
+  const rawHist = [];
+  return scoreRows.map(({ date, score }) => {
+    const raw = signalFromScore(score, profileCfg.buy, profileCfg.sell);
+    const confirmed = applyConfirmationFilter(raw, rawHist, profileCfg.confirmDays);
+    rawHist.push(raw);
+    return { date, signal: confirmed };
+  });
+}
+
 /**
  * signalRows/priceRows: tarihe göre artan sıralı [{date, signal|close}].
  * AL sinyaliyle pozisyona girer, sinyal AL olmaktan çıkınca o günün kapanışıyla
@@ -79,6 +122,7 @@ function fmtDate(d) {
 export default async function handler(req, res) {
   const symbolsParam = (req.query.symbols || "").toUpperCase().trim();
   const range = (req.query.range || "year").toLowerCase();
+  const profileKey = (req.query.profile || "dengeli").toLowerCase();
   const symbols = symbolsParam.split(",").map((s) => s.trim()).filter(Boolean);
 
   if (!symbols.length) {
@@ -87,11 +131,15 @@ export default async function handler(req, res) {
   if (!RANGE_DAYS[range]) {
     return res.status(400).json({ error: "range 'week', 'month' veya 'year' olmalı" });
   }
+  if (!PROFILES[profileKey]) {
+    return res.status(400).json({ error: "profile 'muhafazakar', 'dengeli' veya 'agresif' olmalı" });
+  }
   if (!pool) {
     return res.status(503).json({ error: "DATABASE_URL tanımlı değil" });
   }
 
   const days = RANGE_DAYS[range];
+  const profileCfg = PROFILES[profileKey];
 
   try {
     const client = await pool.connect();
@@ -112,11 +160,13 @@ export default async function handler(req, res) {
             ORDER BY date ASC`,
           [symbol, days],
         );
-        const signalsResult = await client.query(
-          `SELECT date, signal FROM final_signals
+        // final_score çekilir (signal değil) — profile özgü eşik + onay penceresi
+        // burada, lookback tamponuyla birlikte yeniden hesaplanır.
+        const scoresResult = await client.query(
+          `SELECT date, final_score FROM final_signals
             WHERE symbol = $1 AND date >= CURRENT_DATE - $2::int
             ORDER BY date ASC`,
-          [symbol, days],
+          [symbol, days + LOOKBACK_BUFFER_DAYS],
         );
         const lastSignalResult = await client.query(
           `SELECT signal, weight_technical, weight_volatility, weight_rel_strength
@@ -125,9 +175,11 @@ export default async function handler(req, res) {
         );
 
         const priceRows = pricesResult.rows.map((r) => ({ date: fmtDate(r.date), close: parseFloat(r.close) }));
-        const signalRows = signalsResult.rows.map((r) => ({ date: fmtDate(r.date), signal: r.signal }));
         if (!priceRows.length) continue;
         anyData = true;
+
+        const scoreRows = scoresResult.rows.map((r) => ({ date: fmtDate(r.date), score: parseFloat(r.final_score) }));
+        const signalRows = deriveConfirmedSignals(scoreRows, profileCfg);
 
         const pos = computePositionReturns(signalRows, priceRows);
         const bench = benchmarkCurve(priceRows);
@@ -186,6 +238,7 @@ export default async function handler(req, res) {
 
       const payload = {
         range,
+        profile: profileKey,
         symbols,
         labels,
         strategy,

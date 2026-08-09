@@ -13,14 +13,14 @@ from lib.db import (
     upsert_prices, upsert_features, upsert_model_scores,
     upsert_final_signal, upsert_model_performance,
     fetch_recent_prices, fetch_model_performance, upsert_weights_history,
-    fetch_recent_model_scores,
+    fetch_recent_model_scores, fetch_recent_final_scores,
 )
 from lib.fetch_yahoo   import fetch_ohlcv
 from lib.indicators    import technical_score, sma_series, rsi_series, macd_series, bollinger_series, obv_series
 from lib.regime        import estimate_volatility, detect_regime, volatility_score
 from lib.relative_strength import relative_strength_score
 from lib.ensemble      import combine_scores, signal_from_score, apply_confirmation_filter
-from lib.performance   import compute_hit_rate
+from lib.performance   import compute_hit_rate, compute_model_return_metrics
 
 # ── Hisse tanımları ────────────────────────────────────────────────────────────
 CORE_STOCKS = [
@@ -136,10 +136,15 @@ def run_pipeline():
                 final_score, weights = combine_scores(scores, regime, performance)
                 raw_signal = signal_from_score(final_score)
 
-                # Son 3 günün sinyali (tutarlılık filtresi)
-                from lib.db import fetch_recent_signals
-                recent = fetch_recent_signals(symbol, days=3)
-                recent_sigs = [r["signal"] for r in sorted(recent, key=lambda x: x["date"])]
+                # Tutarlılık filtresi: önceki 2 günün HAM sinyali gerekir (onaylanmış
+                # final_signals.signal değil — aksi halde BEKLE kendini doğrulayan bir
+                # tuzağa döner). Ham sinyal saklanmıyor, ama final_score'dan yeniden
+                # türetilebilir.
+                recent_scores = fetch_recent_final_scores(symbol, days=2)
+                recent_sigs = [
+                    signal_from_score(float(r["final_score"]))
+                    for r in sorted(recent_scores, key=lambda x: x["date"])
+                ]
                 confirmed_signal, confirmed = apply_confirmation_filter(raw_signal, recent_sigs)
 
                 signal_row = {
@@ -174,7 +179,11 @@ def run_pipeline():
                         for r in score_hist
                     ]
                     hit, n = compute_hit_rate(model_sig_hist, price_hist)
-                    upsert_model_performance(symbol, model_key, hit, n)
+
+                    score_hist_f = [{"date": r["date"], "score": float(r["score"])} for r in score_hist]
+                    avg_return, trade_count = compute_model_return_metrics(score_hist_f, price_hist)
+
+                    upsert_model_performance(symbol, model_key, hit, n, avg_return, trade_count)
 
                 print(f"   → Sinyal: {confirmed_signal} (skor: {final_score:.1f}, rejim: {regime})")
                 processed.append(symbol)
