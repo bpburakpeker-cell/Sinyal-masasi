@@ -42,11 +42,11 @@ function parseConnectionString() {
 function inferProvider(hostname = "") {
   const host = hostname.toLowerCase();
   if (!host) return "unknown";
-  if (host.includes("neon.tech")) return "neon";
-  if (host.includes("supabase.co")) return "supabase";
-  if (host.includes("vercel-storage.com")) return "vercel-postgres";
-  if (host.includes("render.com")) return "render";
-  if (host.includes("railway.app")) return "railway";
+  if (host === "neon.tech" || host.endsWith(".neon.tech")) return "neon";
+  if (host === "supabase.co" || host.endsWith(".supabase.co")) return "supabase";
+  if (host === "vercel-storage.com" || host.endsWith(".vercel-storage.com")) return "vercel-postgres";
+  if (host === "render.com" || host.endsWith(".render.com")) return "render";
+  if (host === "railway.app" || host.endsWith(".railway.app")) return "railway";
   return "custom";
 }
 
