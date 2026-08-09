@@ -40,20 +40,17 @@ function parseRSS(xml) {
   return items;
 }
 
-export default async function handler(req, res) {
-  const { symbol } = req.query;
-  if (!symbol) {
-    res.status(400).json({ error: "symbol parametresi gerekli" });
-    return;
-  }
+function dedupeItems(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${item.title}|${item.link}`.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
-  // Yahoo Finance RSS — ek haber kaynağı olarak Finans haberleri de deneyelim
-  const urls = [
-    `https://finance.yahoo.com/rss/headline?s=${encodeURIComponent(symbol)}`,
-    `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(symbol)}&region=TR&lang=tr-TR`,
-  ];
-
-  let items = [];
+async function fetchFirstAvailable(urls) {
   for (const url of urls) {
     try {
       const r = await fetch(url, {
@@ -61,25 +58,65 @@ export default async function handler(req, res) {
       });
       if (!r.ok) continue;
       const xml = await r.text();
-      const parsed = parseRSS(xml);
-      if (parsed.length > 0) { items = parsed; break; }
+      const parsed = dedupeItems(parseRSS(xml));
+      if (parsed.length > 0) return parsed;
     } catch (_) {
       // sonraki kaynağa geç
     }
   }
+  return [];
+}
 
-  // Her habere sentiment skoru ekle
-  const scored = items.slice(0, 10).map((item) => ({
+function scoreItems(items, limit = 10) {
+  return items.slice(0, limit).map((item) => ({
     ...item,
     sentiment: sentimentScore(item.title),
   }));
+}
 
-  // Genel sentiment: son haberlerin ağırlıklı ortalaması (yeniler daha ağırlıklı)
-  const avgSentiment = scored.length
-    ? scored.reduce((sum, it, idx) => sum + it.sentiment * (scored.length - idx), 0) /
-      scored.reduce((sum, _, idx) => sum + (scored.length - idx), 0)
-    : 0;
+function averageSentiment(items) {
+  if (!items.length) return 0;
+  const numerator = items.reduce((sum, it, idx) => sum + it.sentiment * (items.length - idx), 0);
+  const denominator = items.reduce((sum, _, idx) => sum + (items.length - idx), 0);
+  return denominator ? numerator / denominator : 0;
+}
+
+export default async function handler(req, res) {
+  const { symbol } = req.query;
+  if (!symbol) {
+    res.status(400).json({ error: "symbol parametresi gerekli" });
+    return;
+  }
+
+  const stockUrls = [
+    `https://finance.yahoo.com/rss/headline?s=${encodeURIComponent(symbol)}`,
+    `https://feeds.finance.yahoo.com/rss/2.0/headline?s=${encodeURIComponent(symbol)}&region=TR&lang=tr-TR`,
+  ];
+  const marketUrls = [
+    "https://finance.yahoo.com/news/rssindex",
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EXU100&region=TR&lang=tr-TR",
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EXU030&region=TR&lang=tr-TR",
+  ];
+
+  const [stockItems, marketItems] = await Promise.all([
+    fetchFirstAvailable(stockUrls),
+    fetchFirstAvailable(marketUrls),
+  ]);
+
+  const scored = scoreItems(stockItems, 10);
+  const marketScored = scoreItems(marketItems, 8);
+  const avgSentiment = averageSentiment(scored);
+  const marketSentiment = averageSentiment(marketScored);
+  const combinedSentiment = Math.max(-1, Math.min(1, avgSentiment * 0.7 + marketSentiment * 0.3));
 
   res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
-  res.status(200).json({ items: scored, avgSentiment: Number(avgSentiment.toFixed(3)) });
+  res.status(200).json({
+    items: scored,
+    avgSentiment: Number(avgSentiment.toFixed(3)),
+    market: {
+      items: marketScored,
+      avgSentiment: Number(marketSentiment.toFixed(3)),
+    },
+    combinedSentiment: Number(combinedSentiment.toFixed(3)),
+  });
 }
