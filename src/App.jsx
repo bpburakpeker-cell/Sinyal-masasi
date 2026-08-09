@@ -1250,8 +1250,8 @@ function PredictionPerformancePanel({ forecast, predictionRecords = [] }) {
     const yearMap = {};
     completed.forEach((row) => {
       const actualDate = row.actualDate || row.targetDate || row.baseDate;
-      const monthKey = monthKeyFromDate(actualDate);
-      const yearKey = yearKeyFromDate(actualDate);
+      const monthKey = monthKeyFromDate(new Date(actualDate));
+      const yearKey = yearKeyFromDate(new Date(actualDate));
       monthMap[monthKey] ||= [];
       yearMap[yearKey] ||= [];
       monthMap[monthKey].push(row);

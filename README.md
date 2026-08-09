@@ -8,7 +8,9 @@ Uygulamanın özellik özeti için: **`/UYGULAMA.md`**
 - Son güncelleme kapsamında uygulamaya:
   - otomatik **AL / BEKLE / SAT** hedef fiyat motoru,
   - hisse + piyasa haberlerinden türetilen sentiment desteği,
-  - otomatik hedefleri manuel ezme ve tekrar otomatiğe dönme akışı eklendi.
+  - otomatik hedefleri manuel ezme ve tekrar otomatiğe dönme akışı,
+  - çok faktörlü şirket/piyasa analiz katmanı,
+  - tahmin geçmişi, doğruluk oranı ve tahmin-gerçekleşen fiyat karşılaştırması eklendi.
 - Özelliklerin detayları için: **`/UYGULAMA.md`**
 
 Bu proje iki parçadan oluşur:

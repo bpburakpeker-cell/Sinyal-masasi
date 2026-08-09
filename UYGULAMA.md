@@ -42,6 +42,13 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
   - Her haber için sentiment puanı
   - Hisse ve piyasa için ayrı ortalama duygu özeti
 
+- **Tahmin**
+  - 5 günlük tahmin fiyatı ve beklenen yön
+  - tahmin fiyatı / gerçekleşen fiyat karşılaştırması
+  - yön isabeti ve fiyat yakınlığına dayalı doğruluk oranı
+  - ay bazında detaylı tahmin performansı
+  - yıl bazında doğruluk grafiği
+
 - **Portföy**
   - lot/adet girişi
   - ortalama maliyet girişi
@@ -65,7 +72,19 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
 - Manuel girilen hedefler temizlenirse sistem tekrar otomatik hedefe döner.
 - Hedef kartlarında durumun **MANUEL** veya **OTOMATİK** olduğu gösterilir.
 
-### 5. Portföy ve net hedef takibi
+### 5. Çok faktörlü analiz katmanı
+- Teknik analiz ve haber sentimentine ek olarak aşağıdaki proxy analizler hesaba katılır:
+  - sektör analizi
+  - rekabet pozisyonu
+  - yönetim kalitesi
+  - makro faktörler
+  - temettü politikası
+  - KAP / kurumsal olay etkisi
+  - piyasa akışı / hacim baskısı
+- Bu faktörler açıklanabilir alt skorlar halinde hisse detayında gösterilir.
+- Tahmin motoru, kapanan tahmin kayıtlarından öğrenerek ağırlıkları zaman içinde adapte eder.
+
+### 6. Portföy ve net hedef takibi
 - Ayrı bir **Portföyüm** özeti bulunur.
 - Portföyde kayıtlı hisseler için toplam pozisyon durumu listelenir.
 - **Ana Para & Hedef Takibi (Net)** panelinde:
@@ -105,6 +124,12 @@ Her hisse için detay ekranı açılır ve dört sekme sunulur:
   - Hisse ve piyasa haberlerini ayrı işler.
   - Başlıklardan basit sentiment skoru üretir.
 
+- `api/company.js`
+  - Yahoo şirket özeti/fundamental verilerinden sektör, temettü, büyüme, borç ve hedef fiyat proxy alanlarını çeker.
+
+- `api/market.js`
+  - `^XU100` ve `TRY=X` üzerinden piyasa/makro proxy verilerini üretir.
+
 ## Yenileme sıklığı
 
 - Fiyat ve kur verisi: **10 saniyede bir**
@@ -121,6 +146,7 @@ Kullanıcı tercihleri tarayıcıda `localStorage` içinde saklanır. Kullanıla
 - `sm_net_targets`
 - `sm_perf_snapshots`
 - `sm_monthly_history`
+- `sm_prediction_ledger`
 
 ## Teknik notlar
 
