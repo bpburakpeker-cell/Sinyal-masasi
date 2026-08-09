@@ -11,7 +11,7 @@ sys.path.insert(0, "scripts")
 
 from lib.db import (
     upsert_prices, upsert_features, upsert_model_scores,
-    upsert_final_signal, upsert_model_performance,
+    upsert_final_signal, upsert_model_performance, upsert_weights_history,
 )
 from lib.fetch_yahoo       import fetch_ohlcv
 from lib.indicators        import technical_score, sma_series, rsi_series, macd_series, bollinger_series, obv_series
@@ -102,6 +102,10 @@ def backfill_symbol(symbol, yahoo, sector, peer_closes):
         for k, s in scores.items():
             score_rows.append({"symbol": symbol, "date": d, "model_key": k, "score": s})
 
+        # Not: geriye dönük backfill'de model_performance kullanılmaz — o tablo
+        # bugünün (nihai) isabet oranını tutar, geçmiş günlere uygulamak ileri
+        # tarihli bilgi sızıntısı (look-ahead bias) olurdu. Sadece rejim
+        # ağırlıkları kullanılır; güven skoru sadece canlı pipeline'da (Faz B).
         final_score, weights = combine_scores(scores, regime)
         raw_signal  = signal_from_score(final_score)
         recent_sigs = [s for _, s in signal_hist[-2:]]
@@ -136,14 +140,22 @@ def backfill_symbol(symbol, yahoo, sector, peer_closes):
         upsert_final_signal(row)
     print(f"  {len(signal_rows_db)} sinyal yazıldı.")
 
-    # Performans hesapla
-    price_hist_map = [{"date": r["close"], "close": float(r["close"])} for r in rows]
-    price_hist_map = [{"date": dates[i], "close": closes[i]} for i in range(len(closes))]
+    upsert_weights_history([
+        {
+            "symbol": r["symbol"], "date": r["date"], "regime": r["regime"],
+            "weight_technical": r["weight_technical"], "weight_volatility": r["weight_volatility"],
+            "weight_rel_strength": r["weight_rel_strength"],
+        }
+        for r in signal_rows_db
+    ])
 
+    # Performans hesapla — her modelin KENDİ skor geçmişinden türetilen sinyalle
+    # (final_signals değil) ölçülür, aksi halde üç model de aynı isabet oranını üretir.
     for model_key in ("technical", "volatility", "relative_strength"):
-        last_60_sigs = [{"date": r["date"], "signal": r["signal"]} for r in signal_rows_db[-60:]]
+        last_60_scores = [r for r in score_rows if r["model_key"] == model_key][-60:]
+        model_sig_hist = [{"date": r["date"], "signal": signal_from_score(r["score"])} for r in last_60_scores]
         last_60_prices = [{"date": dates[i], "close": closes[i]} for i in range(max(0, len(closes) - 61), len(closes))]
-        hit, n = compute_hit_rate(last_60_sigs, last_60_prices)
+        hit, n = compute_hit_rate(model_sig_hist, last_60_prices)
         upsert_model_performance(symbol, model_key, hit, n)
         print(f"  {model_key}: isabet=%{hit}  n={n}")
 

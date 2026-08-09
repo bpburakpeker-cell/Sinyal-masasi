@@ -12,7 +12,8 @@ from lib.db import (
     start_pipeline_run, finish_pipeline_run,
     upsert_prices, upsert_features, upsert_model_scores,
     upsert_final_signal, upsert_model_performance,
-    fetch_recent_prices,
+    fetch_recent_prices, fetch_model_performance, upsert_weights_history,
+    fetch_recent_model_scores,
 )
 from lib.fetch_yahoo   import fetch_ohlcv
 from lib.indicators    import technical_score, sma_series, rsi_series, macd_series, bollinger_series, obv_series
@@ -129,8 +130,10 @@ def run_pipeline():
                     for k, s in scores.items()
                 ])
 
-                # 5) Ensemble
-                final_score, weights = combine_scores(scores, regime)
+                # 5) Ensemble — rejim ağırlıklarını, her modelin güncel isabet
+                # oranına göre yumuşak bir güven çarpanıyla ayarla
+                performance = fetch_model_performance(symbol)
+                final_score, weights = combine_scores(scores, regime, performance)
                 raw_signal = signal_from_score(final_score)
 
                 # Son 3 günün sinyali (tutarlılık filtresi)
@@ -152,17 +155,25 @@ def run_pipeline():
                 }
                 upsert_final_signal(signal_row)
 
-                # 6) Performans güncelle
-                from lib.db import fetch_recent_prices as _fp
+                upsert_weights_history([{
+                    "symbol": symbol, "date": today, "regime": regime,
+                    "weight_technical":    weights["technical"],
+                    "weight_volatility":   weights["volatility"],
+                    "weight_rel_strength": weights["relative_strength"],
+                }])
+
+                # 6) Performans güncelle — her modelin KENDİ skor geçmişinden türetilen
+                # sinyalle (final_signals değil) ölçülür, aksi halde üç model de aynı
+                # birleşik sinyali kullanıp hep aynı isabet oranını üretir.
                 price_hist  = [{"date": r["date"], "close": float(r["close"])} for r in db_rows]
 
                 for model_key in ("technical", "volatility", "relative_strength"):
-                    # Model sinyallerini scores tablosundan türet (basit: final_signals kullan)
-                    sig_hist = fetch_recent_signals(symbol, days=60)
-                    hit, n = compute_hit_rate(
-                        [{"date": r["date"], "signal": r["signal"]} for r in sig_hist],
-                        price_hist,
-                    )
+                    score_hist = fetch_recent_model_scores(symbol, model_key, days=60)
+                    model_sig_hist = [
+                        {"date": r["date"], "signal": signal_from_score(float(r["score"]))}
+                        for r in score_hist
+                    ]
+                    hit, n = compute_hit_rate(model_sig_hist, price_hist)
                     upsert_model_performance(symbol, model_key, hit, n)
 
                 print(f"   → Sinyal: {confirmed_signal} (skor: {final_score:.1f}, rejim: {regime})")

@@ -14,13 +14,53 @@ DEFAULT_WEIGHTS = {"technical": 0.40, "volatility": 0.40, "relative_strength": 0
 BUY_THRESHOLD  =  25
 SELL_THRESHOLD = -25
 
+# Güven çarpanı ayarları: hit_rate %50 → çarpan 1.0 (nötr). Sapma başına ne kadar
+# güçlü tepki verileceği ve izin verilen maksimum sapma burada sınırlanır.
+TRUST_SENSITIVITY = 1.0    # (hit_rate - 50) / 100 * TRUST_SENSITIVITY
+TRUST_MAX_DEVIATION = 0.30  # çarpan [0.70, 1.30] aralığına sıkıştırılır
+TRUST_MIN_SAMPLE = 5        # bu örneklemin altında veri "yetersiz" sayılır, çarpan nötr kalır
 
-def combine_scores(scores, regime):
+
+def compute_trust_multipliers(performance):
+    """
+    performance: { model_key: {"hit_rate_pct": float|None, "sample_size": int} }
+    Döner: { model_key: float }  — 1.0 nötr, >1.0 daha fazla güven, <1.0 daha az güven.
+
+    Veri yetersizken (örneklem < TRUST_MIN_SAMPLE veya hit_rate yok) modele
+    müdahale edilmez — rejim tablosundaki ağırlık aynen kullanılır.
+    """
+    performance = performance or {}
+    multipliers = {}
+    for model_key, perf in performance.items():
+        hit_rate    = perf.get("hit_rate_pct") if perf else None
+        sample_size = perf.get("sample_size", 0) if perf else 0
+        if hit_rate is None or sample_size < TRUST_MIN_SAMPLE:
+            multipliers[model_key] = 1.0
+            continue
+        deviation = max(-TRUST_MAX_DEVIATION, min(TRUST_MAX_DEVIATION, (hit_rate - 50) / 100 * TRUST_SENSITIVITY))
+        multipliers[model_key] = 1.0 + deviation
+    return multipliers
+
+
+def combine_scores(scores, regime, performance=None):
     """
     scores: { "technical": float, "volatility": float, "relative_strength": float }
-    Döner: (final_score, signal, weights_used)
+    performance: opsiyonel — { model_key: {"hit_rate_pct": float|None, "sample_size": int} }
+                 verilirse, rejim ağırlıkları her modelin gerçek güncel isabet oranına
+                 göre yumuşak bir şekilde (±%30 içinde) yeniden ölçeklenir.
+    Döner: (final_score, weights_used) — weights_used, DB'ye yazılan ve UI'da
+           gösterilen *efektif* ağırlıklardır.
     """
-    weights = REGIME_WEIGHTS.get(regime, DEFAULT_WEIGHTS)
+    base_weights = REGIME_WEIGHTS.get(regime, DEFAULT_WEIGHTS)
+
+    if performance:
+        trust = compute_trust_multipliers(performance)
+        adjusted = {k: base_weights[k] * trust.get(k, 1.0) for k in base_weights}
+        total = sum(adjusted.values()) or 1.0
+        weights = {k: v / total for k, v in adjusted.items()}
+    else:
+        weights = base_weights
+
     final = sum(scores.get(k, 0) * w for k, w in weights.items())
     final = max(-100, min(100, final))
     return final, weights

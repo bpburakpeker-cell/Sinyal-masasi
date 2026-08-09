@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { loadUserState, saveUserState } from "./lib/persistence";
 import {
   TrendingUp, TrendingDown, Minus, RefreshCw, AlertTriangle,
   ChevronRight, Activity, Plus, Search, X, ArrowLeft,
-  Newspaper, Briefcase, Edit3, Check,
+  Newspaper, Briefcase, Edit3, Check, Info,
 } from "lucide-react";
 
 /* ================================================================
@@ -252,6 +253,14 @@ function monthLabel(monthKey) {
 
 function yearLabel(yearKey) {
   return `${yearKey}`;
+}
+
+function shortTrDate(iso) {
+  try {
+    return new Date(iso).toLocaleDateString("tr-TR", { day: "numeric", month: "short" });
+  } catch {
+    return iso;
+  }
 }
 
 function dateKeyFromDate(date = new Date()) {
@@ -866,6 +875,18 @@ async function fetchSignal(symbol) {
   }
 }
 
+/* ── Sepet performansı: Strateji vs Al-ve-Tut (opsiyonel — yoksa null döner) ── */
+async function fetchPerformance(symbols, range) {
+  if (!symbols?.length) return null;
+  try {
+    const r = await fetch(`/api/performance?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 async function fetchPipelineStatus() {
   try {
     const r = await fetch("/api/system-status");
@@ -992,6 +1013,80 @@ function packageHistory(hist, context = {}) {
 }
 
 /* ────────────────────────────────────────────────────────────────
+   Bilgi ikonu — teknik terimleri sade dilde açıklar
+   ────────────────────────────────────────────────────────────── */
+function InfoTip({ text }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+
+  const show = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    setPos(r);
+    setOpen(true);
+  };
+  const hide = () => setOpen(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onOutside = (e) => {
+      if (btnRef.current && !btnRef.current.contains(e.target)) hide();
+    };
+    const onScroll = () => hide();
+    document.addEventListener("click", onOutside);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("click", onOutside);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        aria-label="Açıklama"
+        className="sm-focus"
+        style={{
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 15, height: 15, marginLeft: 4, verticalAlign: -2,
+          color: open ? C.amber : C.faint, background: "transparent", border: "none",
+          padding: 0, cursor: "pointer", flexShrink: 0,
+        }}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={(e) => { e.stopPropagation(); open ? hide() : show(); }}
+      >
+        <Info size={11} />
+      </button>
+      {open && pos && createPortal(
+        <div
+          role="tooltip"
+          className="font-body"
+          style={{
+            position: "fixed",
+            left: Math.max(8, Math.min(pos.left + pos.width / 2 - 110, window.innerWidth - 228)),
+            top: Math.max(8, pos.top - 8),
+            transform: "translateY(-100%)",
+            width: 220, zIndex: 200,
+            background: "#1B2130", border: `1px solid ${C.border}`, borderLeft: `2px solid ${C.amber}`,
+            borderRadius: 8, padding: "9px 11px", fontSize: 11.5, lineHeight: 1.55, color: C.text,
+            boxShadow: "0 12px 32px rgba(0,0,0,.5)", pointerEvents: "none",
+          }}
+        >
+          {text}
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
    Küçük UI bileşenleri
    ────────────────────────────────────────────────────────────── */
 function Sparkline({ closes, color }) {
@@ -1050,11 +1145,11 @@ function SignalBadge({ signal, size = "sm" }) {
   );
 }
 
-function IndicatorBar({ label, value, sub, barPct, color, extra }) {
+function IndicatorBar({ label, value, sub, barPct, color, extra, info }) {
   return (
     <div className="py-2.5" style={{ borderBottom: `1px solid ${C.border}` }}>
       <div className="flex items-baseline justify-between mb-1.5">
-        <span className="font-body text-xs" style={{ color: C.muted }}>{label}</span>
+        <span className="font-body text-xs flex items-center" style={{ color: C.muted }}>{label}{info && <InfoTip text={info} />}</span>
         <div className="flex items-center gap-2">
           {extra}
           <span className="font-mono text-sm" style={{ color: C.text }}>{value}</span>
@@ -1323,7 +1418,10 @@ function PredictionPerformancePanel({ forecast, predictionRecords = [] }) {
     <div className="space-y-4">
       <div className="grid sm:grid-cols-2 grid-cols-1 gap-3">
         <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
-          <div className="font-body text-xs mb-2" style={{ color: C.muted }}>Güncel Tahmin ({forecast?.horizonDays || PREDICTION_HORIZON_DAYS}g)</div>
+          <div className="font-body text-xs mb-2 flex items-center" style={{ color: C.muted }}>
+            Güncel Tahmin ({forecast?.horizonDays || PREDICTION_HORIZON_DAYS}g)
+            <InfoTip text="Sistemin, birkaç iş günü sonra fiyatın nerede olacağına dair tahmini. Bu bir garanti değil, geçmiş verilerden yola çıkan bir olasılık hesabıdır." />
+          </div>
           {forecast ? (
             <div className="font-mono text-[11px] space-y-1" style={{ color: C.faint }}>
               <div>Tahmin fiyatı: <span style={{ color: C.text }}>{money(forecast.predictedPrice)}</span></div>
@@ -1341,9 +1439,9 @@ function PredictionPerformancePanel({ forecast, predictionRecords = [] }) {
           {completed.length ? (
             <div className="font-mono text-[11px] space-y-1" style={{ color: C.faint }}>
               <div>Tamamlanan tahmin: <span style={{ color: C.text }}>{completed.length}</span></div>
-              <div>Yön isabeti: <span style={{ color: C.text }}>{summary.directionAccuracy.toFixed(1)}%</span></div>
+              <div className="flex items-center">Yön isabeti<InfoTip text="Sistemin 'yükselir mi düşer mi' tahmininin yüzde kaç oranında doğru çıktığı — tam fiyatı değil, sadece yönü baz alır." />: <span style={{ color: C.text }}>{summary.directionAccuracy.toFixed(1)}%</span></div>
               <div>Fiyat yakınlığı: <span style={{ color: C.text }}>{summary.priceAccuracy.toFixed(1)}%</span></div>
-              <div>Bileşik doğruluk: <span style={{ color: C.text }}>{summary.composite.toFixed(1)}%</span></div>
+              <div className="flex items-center">Bileşik doğruluk<InfoTip text="Hem doğru yönü tahmin edip etmediğine hem tahmin edilen fiyatın gerçek fiyata ne kadar yakın çıktığına birlikte bakan genel bir başarı puanı." />: <span style={{ color: C.text }}>{summary.composite.toFixed(1)}%</span></div>
             </div>
           ) : (
             <p className="font-body text-xs" style={{ color: C.faint }}>Doğruluk hesabı için henüz yeterli kapanmış tahmin yok.</p>
@@ -1431,7 +1529,7 @@ function PredictionPerformancePanel({ forecast, predictionRecords = [] }) {
 /* ────────────────────────────────────────────────────────────────
    Detay sayfası
    ────────────────────────────────────────────────────────────── */
-function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, predictionRecords, portfolio, onTargetChange, onTargetReset, onPortfolioChange, onClose, signalData }) {
+function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, resolvedTargets, predictionRecords, portfolio, onTargetChange, onTargetReset, onPortfolioChange, onClose, signalData, perf, perfRange, onPerfRangeChange }) {
   const [btAmount, setBtAmount] = useState(10000);
   const [activeTab, setActiveTab] = useState("indicators");
 
@@ -1448,6 +1546,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
     { id: "prediction", label: "Tahmin" },
     { id: "portfolio", label: "Portföy" },
     { id: "backtest", label: "Simülasyon" },
+    { id: "performance", label: "Performans" },
   ];
 
   const tgt = resolvedTargets || {};
@@ -1480,6 +1579,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               <div className="flex items-center gap-2.5 flex-wrap">
                 <h1 className="font-display text-xl font-bold" style={{ color: C.text }}>{stock.symbol}</h1>
                 <SignalBadge signal={data.signal} size="lg" />
+                <InfoTip text="Sistemin şu anki önerisi. AL: fiyatın yükselme ihtimali güçlü görünüyor. SAT: düşme ihtimali güçlü görünüyor. BEKLE: yön belirsiz, işlem yapmadan önce beklemek daha mantıklı." />
               </div>
               <p className="font-body text-xs mt-0.5" style={{ color: C.muted }}>
                 {stock.name} · {stock.sector}
@@ -1514,7 +1614,10 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
 
         {/* AL/SAT Hedefleri */}
         <div className="rounded-xl p-4 mb-4" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-          <h2 className="font-display text-sm font-semibold mb-3" style={{ color: C.text }}>AL / BEKLE / SAT Hedefleri</h2>
+          <h2 className="font-display text-sm font-semibold mb-3 flex items-center" style={{ color: C.text }}>
+            AL / BEKLE / SAT Hedefleri
+            <InfoTip text="Sistemin önerdiği fiyat seviyeleri. Örneğin 'Alım hedefi 595 TL' demek: fiyat bu seviyeye yaklaşırsa almak mantıklı olabilir — bir garanti değil, geçmiş fiyat hareketlerine dayanan bir öneridir. OTOMATİK: seviyeyi sistem hesapladı. MANUEL: siz kendiniz girdiniz; boş bırakırsanız sistem tekrar otomatik değere döner." />
+          </h2>
           <div className="grid grid-cols-1 gap-0">
             <PriceTarget
               label="AL"
@@ -1594,6 +1697,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
             <div>
               <IndicatorBar
                 label="RSI (14)"
+                info="Hissenin son günlerde çok hızlı alınıp alınmadığını veya satılıp satılmadığını ölçer. Çok yüksekse (aşırı alım) fiyat geri çekilebilir; çok düşükse (aşırı satım) toparlanma ihtimali artar."
                 value={data.rsi != null ? data.rsi.toFixed(1) : "—"}
                 sub={data.rsi != null ? (data.rsi < 30 ? "Aşırı satım — alım fırsatı olabilir" : data.rsi > 70 ? "Aşırı alım — dikkatli ol" : "Nötr bölge") : ""}
                 barPct={data.rsi ?? 50}
@@ -1601,6 +1705,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               />
               <IndicatorBar
                 label="MACD Histogram"
+                info="Fiyatın son dönemdeki ivmesini (hızlanıp hızlanmadığını) gösterir. Yukarı yönlüyse yükseliş güçleniyor, aşağı yönlüyse düşüş güçleniyor demektir."
                 value={data.macdHist != null ? data.macdHist.toFixed(3) : "—"}
                 sub={data.macdHist != null ? (data.macdHist > 0 ? "Momentum yukarı yönlü" : "Momentum aşağı yönlü") : ""}
                 barPct={data.macdHist != null ? 50 + clip(data.macdHist * 200, -50, 50) : 50}
@@ -1608,6 +1713,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               />
               <IndicatorBar
                 label="Hareketli Ortalama (20/50)"
+                info="Fiyatın son 20 gün ile son 50 günlük ortalamasını karşılaştırır. Kısa vadeli ortalama uzun vadelinin üzerindeyse genel eğilim yukarı, altındaysa aşağı kabul edilir."
                 value={data.maTrend}
                 sub="Fiyatın kısa ve uzun vadeli ortalamaya göre konumu"
                 barPct={data.maTrend === "Yükseliş" ? 80 : data.maTrend === "Düşüş" ? 20 : 50}
@@ -1615,6 +1721,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               />
               <IndicatorBar
                 label="Bollinger Bands"
+                info="Fiyatın 'normal' aralığının neresinde olduğunu gösterir. Üst sınıra yakınsa fiyat aşırı yükselmiş, alt sınıra yakınsa aşırı düşmüş olabilir."
                 value={data.bollLabel}
                 sub={`Bant içi konum: %${(data.bollPos * 100).toFixed(0)} — ${data.bollPos > 0.8 ? "aşırı alım yakını" : data.bollPos < 0.2 ? "aşırı satım yakını" : "orta bant"}`}
                 barPct={data.bollPos * 100}
@@ -1622,6 +1729,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               />
               <IndicatorBar
                 label="Hisse Haber Sentimenti"
+                info="Bu hisseyle ilgili son haberlerin olumlu mu olumsuz mu olduğunu otomatik olarak ölçer. Pozitif değer haber akışının hisse lehine, negatif değer aleyhine olduğunu gösterir."
                 value={data.stockNewsSentiment > 0 ? `+${data.stockNewsSentiment.toFixed(2)}` : data.stockNewsSentiment.toFixed(2)}
                 sub={data.stockNewsSentiment > 0.1 ? "Hisse haberleri genel olarak olumlu" : data.stockNewsSentiment < -0.1 ? "Hisse haberleri genel olarak olumsuz" : "Hisse haberleri nötr"}
                 barPct={50 + data.stockNewsSentiment * 50}
@@ -1629,6 +1737,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               />
               <IndicatorBar
                 label="Piyasa Haber Sentimenti"
+                info="Genel borsa/piyasa haberlerinin olumlu mu olumsuz mu olduğunu ölçer — hisseye özel değil, tüm piyasayı ilgilendiren haber akışıdır."
                 value={data.marketNewsSentiment > 0 ? `+${data.marketNewsSentiment.toFixed(2)}` : data.marketNewsSentiment.toFixed(2)}
                 sub={data.marketNewsSentiment > 0.1 ? "Borsa haber akışı olumlu" : data.marketNewsSentiment < -0.1 ? "Borsa haber akışı baskılı" : "Borsa haber akışı nötr"}
                 barPct={50 + data.marketNewsSentiment * 50}
@@ -1636,6 +1745,7 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               />
               <IndicatorBar
                 label="Birleşik Haber Etkisi"
+                info="Hem hisseye özel hem genel piyasa haberlerinin birlikte değerlendirilmiş, tek bir sayıya indirgenmiş hali."
                 value={data.newsSentiment > 0 ? `+${data.newsSentiment.toFixed(2)}` : data.newsSentiment.toFixed(2)}
                 sub={data.newsSentiment > 0.1 ? "Hedefler için haber desteği pozitif" : data.newsSentiment < -0.1 ? "Hedefler için haber baskısı var" : "Hedefler için haber etkisi dengeli"}
                 barPct={50 + data.newsSentiment * 50}
@@ -1655,7 +1765,10 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               {/* Sinyal skoru */}
               <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${C.border}` }}>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="font-body text-xs" style={{ color: C.muted }}>Birleşik Sinyal Skoru</span>
+                  <span className="font-body text-xs flex items-center" style={{ color: C.muted }}>
+                    Birleşik Sinyal Skoru
+                    <InfoTip text="Yukarıdaki tüm göstergelerin tek bir sayıya indirgenmiş hali. -100 çok güçlü SAT, +100 çok güçlü AL anlamına gelir." />
+                  </span>
                   <span className="font-mono text-sm font-semibold" style={{ color: C.text }}>{data.score}/100</span>
                 </div>
                 <div className="h-2.5 rounded-full overflow-hidden" style={{ background: C.panelAlt }}>
@@ -1669,7 +1782,10 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
 
               {/* Adaptif ağırlıklar */}
               <div className="mt-3 pt-3" style={{ borderTop: `1px solid ${C.border}` }}>
-                <p className="font-body text-[11px] mb-2" style={{ color: C.faint }}>Adaptif ağırlıklar (geçmiş veri bazlı öğrenim):</p>
+                <p className="font-body text-[11px] mb-2 flex items-center" style={{ color: C.faint }}>
+                  Adaptif ağırlıklar (geçmiş veri bazlı öğrenim):
+                  <InfoTip text="Sistem her göstergeye ne kadar önem vereceğini, geçmişte hangisinin daha isabetli çıktığına bakarak zamanla kendisi ayarlar. Buradaki yüzdeler o anki önem sırasını gösterir." />
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {[
                     ["RSI", data.weights.wRsi],
@@ -1697,45 +1813,12 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               {/* Backend pipeline model kartları (yalnızca DB verisi varsa) */}
               {signalData?.models?.length > 0 && (
                 <div className="mt-5 pt-4" style={{ borderTop: `1px solid ${C.border}` }}>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="font-display text-sm font-semibold" style={{ color: C.text }}>
-                      Bu Sinyali Oluşturan Modeller
-                    </span>
-                    {signalData.regime && REGIME_LABELS[signalData.regime] && (
-                      <span
-                        className="font-mono text-[10px] px-2 py-1 rounded-md"
-                        style={{
-                          background: `rgba(${REGIME_LABELS[signalData.regime].color === "green" ? "52,211,153" : REGIME_LABELS[signalData.regime].color === "red" ? "251,91,77" : "245,166,35"},0.14)`,
-                          color: REGIME_LABELS[signalData.regime].color === "green" ? C.green : REGIME_LABELS[signalData.regime].color === "red" ? C.red : C.amber,
-                        }}
-                      >
-                        {REGIME_LABELS[signalData.regime].label}
-                      </span>
-                    )}
-                  </div>
+                  <span className="font-display text-sm font-semibold flex items-center mb-3" style={{ color: C.text }}>
+                    Bu Sinyali Oluşturan Modeller
+                    <InfoTip text="Sinyali üreten üç farklı analiz yöntemi. Ağırlık ne kadar yüksekse, o yöntemin bu karardaki etkisi o kadar fazladır." />
+                  </span>
 
-                  <div className="space-y-2">
-                    {signalData.models.map((m) => (
-                      <div key={m.key} className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="font-body text-xs font-medium" style={{ color: C.text }}>{m.label}</span>
-                          <span className="font-mono text-[11px]" style={{ color: C.amber }}>%{m.weightPct} ağırlık</span>
-                        </div>
-                        <div className="h-1 rounded-full overflow-hidden mb-2" style={{ background: C.border }}>
-                          <div className="h-full rounded-full" style={{ width: `${m.weightPct}%`, background: C.amber }} />
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-body text-[10.5px]" style={{ color: C.faint }}>{m.description}</span>
-                          <span
-                            className="font-mono text-[11px] flex-shrink-0 ml-2"
-                            style={{ color: m.hitRatePct != null ? (m.hitRatePct >= 55 ? C.green : C.muted) : C.faint }}
-                          >
-                            {m.hitRatePct != null ? `%${m.hitRatePct} isabet` : `veri birikiyor (${m.sampleSize}/60)`}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  <ModelLeaderCards models={signalData.models} regime={signalData.regime} />
 
                   <div className="font-body text-[10.5px] mt-2.5" style={{ color: C.faint }}>
                     İsabet yüzdeleri bu hissenin son 60 işlem gününde modelin yönlü sinyalleri ile gerçekleşen fiyat
@@ -1751,8 +1834,9 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
             <div>
               <div className="flex items-center gap-2 mb-4">
                 <Newspaper size={15} style={{ color: C.amber }} />
-                <span className="font-display text-sm font-semibold" style={{ color: C.text }}>
+                <span className="font-display text-sm font-semibold flex items-center" style={{ color: C.text }}>
                   Güncel Haberler — {stock.symbol}
+                  <InfoTip text="Bu puan, haberin hisse için iyi mi kötü mü olduğunu otomatik olarak tahmin eder. +1'e yakın çok olumlu, -1'e yakın çok olumsuz, 0 nötr demektir." />
                 </span>
               </div>
               <NewsPanel news={news} loading={newsLoading} />
@@ -1787,7 +1871,10 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
                   />
                 </div>
                 <div>
-                  <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Ortalama Maliyet (TL)</label>
+                  <label className="font-body text-xs mb-1.5 flex items-center" style={{ color: C.muted }}>
+                    Ortalama Maliyet (TL)
+                    <InfoTip text="Elinizdeki hisseleri ortalama hangi fiyattan aldığınız. Birden fazla seferde farklı fiyattan aldıysanız, bunların ortalamasıdır." />
+                  </label>
                   <input
                     type="number"
                     min={0}
@@ -1830,7 +1917,10 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
             <div>
               <div className="flex items-center gap-2 mb-4">
                 <Activity size={15} style={{ color: C.amber }} />
-                <span className="font-display text-sm font-semibold" style={{ color: C.text }}>Geriye Dönük Simülasyon</span>
+                <span className="font-display text-sm font-semibold flex items-center" style={{ color: C.text }}>
+                  Geriye Dönük Simülasyon
+                  <InfoTip text="Bu, gerçek para kullanmadan yapılan bir 'geçmişe dönük deneme'dir: sistem geçmişte önerdiği al/sat kararlarını gerçekten uygulasaydınız ne olurdu, onu gösterir. Geçmişte böyle çıkması, gelecekte de aynı sonucu vereceği anlamına gelmez." />
+                </span>
               </div>
               <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Başlangıç tutarı (TL)</label>
               <input
@@ -1852,7 +1942,10 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
                   </div>
                 </div>
                 <div className="rounded-lg p-3" style={{ background: C.panelAlt }}>
-                  <div className="font-body text-[11px]" style={{ color: C.faint }}>Al-ve-tut kıyası</div>
+                  <div className="font-body text-[11px] flex items-center" style={{ color: C.faint }}>
+                    Al-ve-tut kıyası
+                    <InfoTip text="Hiçbir şey yapmadan hisseyi elde tutmuş olsaydınız alacağınız sonuçla karşılaştırma." />
+                  </div>
                   <div className="font-mono text-lg mt-1" style={{ color: bt.buyHoldReturnPct >= 0 ? C.green : C.red }}>
                     {bt.buyHoldFinal.toFixed(2)} TL
                   </div>
@@ -1864,6 +1957,134 @@ function DetailPage({ stock, data, usdTry, news, newsLoading, manualTargets, res
               <p className="font-body text-[11px] mt-3" style={{ color: C.faint }}>
                 Son ~1 yıllık geçmiş üzerinden, sinyal değişiminde tüm bakiye al/sat varsayımıyla hesaplanır. İşlem maliyeti içermez. Geçmiş performans gelecek garantisi değildir.
               </p>
+            </div>
+          )}
+
+          {/* Performans */}
+          {activeTab === "performance" && (
+            <div>
+              <p className="font-body text-xs mb-4" style={{ color: C.muted }}>
+                Bu sekme, sinyallerin geçmişte gerçekten takip edilseydi ne kazandıracağını — sadece yön isabetini değil,
+                gerçekleşen getiriyi ve alınan riski — gösterir. Al-ve-Tut ile karşılaştırma, sistemin kendi başına katma
+                değer üretip üretmediğini görmenizi sağlar.
+              </p>
+
+              {!perf ? (
+                <div className="font-body text-xs py-4 text-center" style={{ color: C.faint }}>Yükleniyor…</div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-display text-sm font-semibold" style={{ color: C.text }}>Sepet Performansı</span>
+                    <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                      {PERF_RANGE_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.id}
+                          onClick={() => onPerfRangeChange(opt.id)}
+                          className="sm-focus font-mono text-[11px] font-semibold px-2.5 py-1 rounded-md"
+                          style={{
+                            background: perfRange === opt.id ? C.amber + "2e" : "transparent",
+                            color: perfRange === opt.id ? C.amber : C.muted,
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 mb-5">
+                    <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                      <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                        STRATEJİ GETİRİSİ
+                        <InfoTip text="Sistemin size verdiği AL/SAT önerilerini baştan sona takip etseydiniz, seçtiğiniz dönemde ne kadar kazanmış olurdunuz." />
+                      </div>
+                      <div className="font-mono text-lg font-bold mt-1" style={{ color: perf.kpi.stratPct >= 0 ? C.green : C.red }}>{signedPct(perf.kpi.stratPct)}</div>
+                    </div>
+                    <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                      <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                        AL-VE-TUT GETİRİSİ
+                        <InfoTip text="Hiçbir şey yapmadan, hisseleri en başta alıp hiç satmadan elde tutsaydınız ne kadar kazanmış olurdunuz." />
+                      </div>
+                      <div className="font-mono text-lg font-bold mt-1" style={{ color: C.muted }}>{signedPct(perf.kpi.benchPct)}</div>
+                    </div>
+                    <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                      <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                        FARK (ALFA)
+                        <InfoTip text="Sistemi takip etmenin, hiçbir şey yapmadan beklemeye göre size kaç puan daha fazla (veya az) kazandırdığı." />
+                      </div>
+                      <div className="font-mono text-lg font-bold mt-1" style={{ color: perf.kpi.alphaPct >= 0 ? C.green : C.red }}>{signedPct(perf.kpi.alphaPct)}</div>
+                    </div>
+                    <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                      <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                        İSABET ORANI
+                        <InfoTip text="Verilen önerilerin yüzde kaçının doğru çıktığı." />
+                      </div>
+                      <div className="font-mono text-lg font-bold mt-1" style={{ color: C.text }}>{perf.kpi.hitPct != null ? `%${perf.kpi.hitPct}` : "—"}</div>
+                      {perf.kpi.hitPct == null && <div className="font-body text-[10px] mt-0.5" style={{ color: C.faint }}>yetersiz veri (n={perf.kpi.tradeCount})</div>}
+                    </div>
+                    <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                      <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                        MAKS. DÜŞÜŞ
+                        <InfoTip text="Seçilen dönem içinde, en tepeden en dibe kadar en çok ne kadar değer kaybı yaşandığı. Düşük olması daha güvenli demektir." />
+                      </div>
+                      <div className="font-mono text-lg font-bold mt-1" style={{ color: C.red }}>-{perf.kpi.maxDrawdownPct}%</div>
+                    </div>
+                    <div className="rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                      <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                        İŞLEM SAYISI
+                        <InfoTip text="Bu dönemde kaç kere al/sat yönü değiştirildiği. Çok sık değişim gerçek hayatta işlem masrafı demektir; sistem gereksiz sık dönüş yapmaması için ayarlanmıştır." />
+                      </div>
+                      <div className="font-mono text-lg font-bold mt-1" style={{ color: C.amber }}>{perf.kpi.tradeCount}</div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-display text-sm font-semibold flex items-center" style={{ color: C.text }}>
+                      Kümülatif Getiri
+                      <InfoTip text="İki çizgi de sıfırdan başlar. Turuncu çizgi sistemi takip etseydiniz birikecek kazancı, gri kesikli çizgi hiç işlem yapmasaydınız birikecek kazancı gösterir." />
+                    </span>
+                    <span className="font-body text-[10.5px]" style={{ color: C.faint }}>imleci grafiğe götürün</span>
+                  </div>
+                  <div className="rounded-lg p-3 mb-5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                    <div className="flex items-center gap-4 mb-2 font-body text-[11px]" style={{ color: C.muted }}>
+                      <span className="flex items-center gap-1.5"><span style={{ width: 14, height: 0, borderTop: `2.5px solid ${C.amber}` }} />Strateji (sepet)</span>
+                      <span className="flex items-center gap-1.5"><span style={{ width: 14, height: 0, borderTop: `2.5px dashed ${C.muted}` }} />Al-ve-Tut</span>
+                    </div>
+                    <EquityChart labels={perf.labels} strategy={perf.strategy} benchmark={perf.benchmark} height={220} />
+                  </div>
+
+                  {signalData?.models?.length > 0 && (
+                    <div className="mb-5">
+                      <span className="font-display text-sm font-semibold flex items-center mb-3" style={{ color: C.text }}>
+                        Şu An Öne Çıkan Model
+                        <InfoTip text="Şu anki piyasa koşullarında sisteme en çok hangi analiz yönteminin yön verdiği." />
+                      </span>
+                      <ModelLeaderCards models={signalData.models} regime={signalData.regime} />
+                    </div>
+                  )}
+
+                  {!!perf.perStock && Object.keys(perf.perStock).length > 0 && (
+                    <div>
+                      <span className="font-display text-sm font-semibold" style={{ color: C.text }}>Hisse Bazlı Kırılım</span>
+                      <div className="mt-3 space-y-2">
+                        {Object.entries(perf.perStock).map(([symbol, s]) => (
+                          <div key={symbol} className="flex items-center justify-between rounded-lg p-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+                            <span className="font-mono text-xs font-semibold" style={{ color: C.text }}>{symbol}</span>
+                            <div className="text-right">
+                              <div className="font-mono text-sm font-bold" style={{ color: s.deltaPct >= 0 ? C.green : C.red }}>{signedPct(s.deltaPct)}</div>
+                              {s.leadingModel && <div className="font-body text-[10px]" style={{ color: C.faint }}>Lider: {s.leadingModel}</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="font-body text-[10.5px] mt-5 pt-3" style={{ color: C.faint, borderTop: `1px solid ${C.border}` }}>
+                    Geçmiş performans gelecekteki sonuçların garantisi değildir. Uygulama yatırım tavsiyesi vermez.
+                  </p>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1975,6 +2196,276 @@ function AddStockModal({ existingSymbols, onAdd, onClose }) {
 }
 
 /* ────────────────────────────────────────────────────────────────
+   Strateji vs Al-ve-Tut — kümülatif getiri grafiği
+   ────────────────────────────────────────────────────────────── */
+function EquityChart({ labels, strategy, benchmark, height = 200, compact = false }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  if (!labels?.length) {
+    return (
+      <div className="font-body text-xs py-6 text-center" style={{ color: C.faint }}>
+        Grafik için henüz yeterli veri yok. Pipeline birkaç gün çalıştıkça burada dolacak.
+      </div>
+    );
+  }
+
+  const W = 700, H = height, padL = 4, padR = 4, padT = compact ? 8 : 14, padB = compact ? 6 : 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = labels.length;
+  const last = n - 1;
+
+  const allVals = strategy.concat(benchmark);
+  const minV = Math.min(0, ...allVals);
+  const maxV = Math.max(...allVals) * 1.08 || 1;
+
+  const x = (i) => padL + (n === 1 ? 0 : (i / (n - 1)) * plotW);
+  const y = (v) => padT + plotH - ((v - minV) / (maxV - minV || 1)) * plotH;
+  const pathFor = (arr) => arr.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const areaPath = `${pathFor(strategy)} L${x(last).toFixed(1)},${y(minV).toFixed(1)} L${x(0).toFixed(1)},${y(minV).toFixed(1)} Z`;
+  const gradId = `perfGrad_${compact ? "c" : "f"}`;
+
+  const handleMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    setHoverIdx(clip(Math.round(relX * last), 0, last));
+  };
+
+  const hi = hoverIdx != null ? hoverIdx : last;
+  const lastStrat = strategy[last];
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: "auto", overflow: "visible" }}>
+        {(compact ? [0] : [0, maxV * 0.5, maxV]).map((gv, idx) => (
+          <line key={idx} x1={padL} x2={W - padR} y1={y(gv)} y2={y(gv)} stroke={gv === 0 ? "#2A3140" : "#1B2130"} strokeWidth="1" />
+        ))}
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={C.amber} stopOpacity="0.28" />
+            <stop offset="100%" stopColor={C.amber} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={areaPath} fill={`url(#${gradId})`} stroke="none" />
+        <path d={pathFor(benchmark)} fill="none" stroke={C.muted} strokeWidth="2" strokeDasharray="5 4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={pathFor(strategy)} fill="none" stroke={C.amber} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx={x(last)} cy={y(lastStrat)} r={compact ? 2.5 : 3.5} fill={C.amber} />
+        <circle cx={x(last)} cy={y(benchmark[last])} r={compact ? 2.5 : 3.5} fill={C.muted} />
+        {!compact && (
+          <text x={x(last) - 2} y={y(lastStrat) - 9} textAnchor="end" fill={C.amber} fontSize="11" fontWeight="700"
+            fontFamily="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+            {lastStrat >= 0 ? "+" : ""}{lastStrat.toFixed(1)}%
+          </text>
+        )}
+        {!compact && [0, Math.floor(last / 2), last].map((i) => (
+          <text key={i} x={x(i)} y={H - 6} textAnchor={i === 0 ? "start" : i === last ? "end" : "middle"}
+            fill={C.faint} fontSize="10" fontFamily="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+            {shortTrDate(labels[i])}
+          </text>
+        ))}
+        {hoverIdx != null && (
+          <>
+            <line x1={x(hi)} x2={x(hi)} y1={padT} y2={padT + plotH} stroke={C.faint} strokeWidth="1" strokeDasharray="3 3" />
+            <circle cx={x(hi)} cy={y(strategy[hi])} r={(compact ? 2.5 : 3.5) + 1} fill={C.amber} stroke={C.bg} strokeWidth="2" />
+            <circle cx={x(hi)} cy={y(benchmark[hi])} r={(compact ? 2.5 : 3.5) + 1} fill={C.muted} stroke={C.bg} strokeWidth="2" />
+          </>
+        )}
+        <rect x="0" y="0" width={W} height={H} fill="transparent" style={{ cursor: "crosshair" }}
+          onMouseMove={handleMove} onMouseLeave={() => setHoverIdx(null)} />
+      </svg>
+      {hoverIdx != null && (
+        <div className="font-mono absolute" style={{
+          left: `${(x(hi) / W) * 100}%`, top: `${(y(Math.max(strategy[hi], benchmark[hi])) / H) * 100}%`,
+          transform: "translate(-50%, -115%)", background: "#1B2130", border: `1px solid ${C.border}`,
+          borderRadius: 8, padding: "8px 10px", fontSize: 11, whiteSpace: "nowrap",
+          boxShadow: "0 8px 20px rgba(0,0,0,.35)", zIndex: 5, pointerEvents: "none",
+        }}>
+          <div style={{ color: C.faint, marginBottom: 4 }}>{shortTrDate(labels[hi])}</div>
+          <div className="flex items-center gap-1.5">
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.amber }} />
+            Strateji {strategy[hi] >= 0 ? "+" : ""}{strategy[hi].toFixed(1)}%
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.muted }} />
+            Al-ve-Tut {benchmark[hi] >= 0 ? "+" : ""}{benchmark[hi].toFixed(1)}%
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Model liderlik kartları — İndikatörler ve Performans sekmelerinde ortak
+   ────────────────────────────────────────────────────────────── */
+function ModelLeaderCards({ models, regime }) {
+  if (!models?.length) return null;
+  const sorted = [...models].sort((a, b) => b.weightPct - a.weightPct);
+  return (
+    <>
+      {regime && REGIME_LABELS[regime] && (
+        <div className="mb-3 flex items-center justify-end">
+          <span
+            className="font-mono text-[10px] px-2 py-1 rounded-md flex items-center"
+            style={{
+              background: `rgba(${REGIME_LABELS[regime].color === "green" ? "52,211,153" : REGIME_LABELS[regime].color === "red" ? "251,91,77" : "245,166,35"},0.14)`,
+              color: REGIME_LABELS[regime].color === "green" ? C.green : REGIME_LABELS[regime].color === "red" ? C.red : C.amber,
+            }}
+          >
+            {REGIME_LABELS[regime].label}
+            <InfoTip text="Piyasanın şu anki genel havası. Sistem, piyasanın durumuna göre hangi analiz yöntemine daha çok güveneceğini buna göre ayarlar." />
+          </span>
+        </div>
+      )}
+      <div className="space-y-2">
+        {sorted.map((m, idx) => (
+          <div key={m.key} className="rounded-lg p-3 relative" style={{
+            background: C.panelAlt,
+            border: `1px solid ${idx === 0 ? C.amber + "55" : C.border}`,
+          }}>
+            {idx === 0 && (
+              <span className="font-mono absolute -top-2 right-2.5 text-[9px] font-extrabold px-1.5 py-0.5 rounded-full"
+                style={{ background: C.amber, color: "#1a1204", letterSpacing: "0.03em" }}>
+                ŞU AN LİDER
+              </span>
+            )}
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="font-body text-xs font-medium" style={{ color: C.text }}>{m.label}</span>
+              <span className="font-mono text-[11px]" style={{ color: C.amber }}>%{m.weightPct} ağırlık</span>
+            </div>
+            <div className="h-1 rounded-full overflow-hidden mb-2" style={{ background: C.border }}>
+              <div className="h-full rounded-full" style={{ width: `${m.weightPct}%`, background: C.amber }} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="font-body text-[10.5px]" style={{ color: C.faint }}>{m.description}</span>
+              <span
+                className="font-mono text-[11px] flex-shrink-0 ml-2"
+                style={{ color: m.hitRatePct != null ? (m.hitRatePct >= 55 ? C.green : C.muted) : C.faint }}
+              >
+                {m.hitRatePct != null ? `%${m.hitRatePct} isabet` : `veri birikiyor (${m.sampleSize}/60)`}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Toplam Portföy Performansı — Dashboard kartı (Strateji vs Al-ve-Tut)
+   ────────────────────────────────────────────────────────────── */
+const PERF_RANGE_OPTIONS = [
+  { id: "week", label: "Hafta" },
+  { id: "month", label: "Ay" },
+  { id: "year", label: "Yıl" },
+];
+
+function PortfolioPerformanceCard({ perf, range, onRangeChange, onSelectStock }) {
+  const kpi = perf?.kpi;
+  const rangeSubLabel = { week: "son 7 gün", month: "son 30 gün", year: "son 12 ay" }[range];
+
+  return (
+    <div className="rounded-xl p-4 mb-5" style={{
+      background: `linear-gradient(160deg, ${C.amber}1a, ${C.panel} 45%)`,
+      border: `1px solid ${C.amber}55`,
+    }}>
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+        <div>
+          <div className="font-display text-sm font-semibold" style={{ color: C.text }}>📊 Toplam Portföy Performansı</div>
+          <div className="font-body text-[11px] mt-0.5" style={{ color: C.muted }}>
+            {perf?.symbols?.join(" + ") || "Seçili hisseler"} birleşik · {rangeSubLabel}
+          </div>
+        </div>
+        <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+          {PERF_RANGE_OPTIONS.map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => onRangeChange(opt.id)}
+              className="sm-focus font-mono text-[11px] font-semibold px-2.5 py-1 rounded-md"
+              style={{
+                background: range === opt.id ? C.amber + "2e" : "transparent",
+                color: range === opt.id ? C.amber : C.muted,
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+          <InfoTip text="Performansı hangi zaman aralığında görmek istediğinizi seçin. Kısa dönemlerde (özellikle Hafta) sonuçlar çok az işleme dayandığı için güvenilirliği düşüktür." />
+        </div>
+      </div>
+
+      {!perf ? (
+        <div className="font-body text-xs py-4 text-center" style={{ color: C.faint }}>
+          Portföy performansı yükleniyor…
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-4 gap-2 mb-3">
+            <div className="rounded-lg p-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+              <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                STRATEJİ
+                <InfoTip text="Sistemin size verdiği AL/SAT önerilerini baştan sona takip etseydiniz, seçtiğiniz dönemde ne kadar kazanmış olurdunuz." />
+              </div>
+              <div className="font-mono text-base font-bold mt-1" style={{ color: kpi.stratPct >= 0 ? C.green : C.red }}>{signedPct(kpi.stratPct)}</div>
+            </div>
+            <div className="rounded-lg p-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+              <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                AL-VE-TUT
+                <InfoTip text="Hiçbir şey yapmadan, hisseleri en başta alıp hiç satmadan elde tutsaydınız ne kadar kazanmış olurdunuz. Sistemin gerçekten işe yarayıp yaramadığını anlamak için bununla karşılaştırıyoruz." />
+              </div>
+              <div className="font-mono text-base font-bold mt-1" style={{ color: C.muted }}>{signedPct(kpi.benchPct)}</div>
+            </div>
+            <div className="rounded-lg p-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+              <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                FARK (ALFA)
+                <InfoTip text="Sistemi takip etmenin, hiçbir şey yapmadan beklemeye göre size kaç puan daha fazla (veya az) kazandırdığı. Pozitifse sistem katkı sağlamış demektir." />
+              </div>
+              <div className="font-mono text-base font-bold mt-1" style={{ color: kpi.alphaPct >= 0 ? C.green : C.red }}>{signedPct(kpi.alphaPct)}</div>
+            </div>
+            <div className="rounded-lg p-2.5" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+              <div className="font-body text-[10px] flex items-center" style={{ color: C.muted }}>
+                İSABET ORANI
+                <InfoTip text="Verilen önerilerin yüzde kaçının doğru çıktığı. Örneğin %61, 100 öneriden yaklaşık 61'inin doğru yönde olduğu anlamına gelir." />
+              </div>
+              <div className="font-mono text-base font-bold mt-1" style={{ color: C.text }}>
+                {kpi.hitPct != null ? `%${kpi.hitPct}` : "—"}
+              </div>
+              {kpi.hitPct == null && (
+                <div className="font-body text-[9.5px] mt-0.5" style={{ color: C.faint }}>yetersiz veri (n={kpi.tradeCount})</div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-lg p-3 mb-3" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
+            <div className="flex items-center gap-4 mb-2 font-body text-[11px]" style={{ color: C.muted }}>
+              <span className="flex items-center gap-1.5"><span style={{ width: 14, height: 0, borderTop: `2.5px solid ${C.amber}` }} />Strateji</span>
+              <span className="flex items-center gap-1.5"><span style={{ width: 14, height: 0, borderTop: `2.5px dashed ${C.muted}` }} />Al-ve-Tut</span>
+            </div>
+            <EquityChart labels={perf.labels} strategy={perf.strategy} benchmark={perf.benchmark} height={110} compact />
+          </div>
+
+          {!!perf.perStock && Object.keys(perf.perStock).length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(perf.perStock).map(([symbol, s]) => (
+                <button
+                  key={symbol}
+                  onClick={() => onSelectStock?.(symbol)}
+                  className="sm-focus font-mono text-[11px] px-2.5 py-1.5 rounded-full flex items-center gap-1.5"
+                  style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }}
+                >
+                  {symbol}
+                  <span style={{ color: s.deltaPct >= 0 ? C.green : C.red, fontWeight: 700 }}>{signedPct(s.deltaPct)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
    Hisse kartı
    ────────────────────────────────────────────────────────────── */
 function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRemove, usdTry, manualTargets, resolvedTargets, signalData }) {
@@ -2071,6 +2562,7 @@ function StockCard({ stock, data, status, error, onRetry, onDemo, onSelect, onRe
                 <div className="font-mono text-[10px] mt-0.5 inline-flex items-center gap-1" style={{ color: C.faint }}>
                   <span style={{ color: C.amber }}>{signalData.models[0].short || signalData.models[0].label}</span>
                   {signalData.models[0].hitRatePct != null && <span>· %{signalData.models[0].hitRatePct} isabet</span>}
+                  <InfoTip text="Bu sinyali en çok hangi analiz yönteminin belirlediği ve o yöntemin son dönemde yüzde kaç doğru çıktığı." />
                 </div>
               )}
             </div>
@@ -2217,7 +2709,10 @@ function NetTargetPanel({
 
       <div className="grid sm:grid-cols-2 grid-cols-1 gap-3 mb-4">
         <div>
-          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Başlangıç Ana Para (referans TL)</label>
+          <label className="font-body text-xs mb-1.5 flex items-center" style={{ color: C.muted }}>
+            Başlangıç Ana Para (referans TL)
+            <InfoTip text="Yatırıma başlarken koyduğunuz referans tutar. Kâr/zarar ve hedef takibi bu rakama göre hesaplanır." />
+          </label>
           <input
             type="number"
             min={0}
@@ -2239,7 +2734,10 @@ function NetTargetPanel({
 
       <div className="grid sm:grid-cols-2 grid-cols-1 gap-3 mb-4">
         <div>
-          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Aylık Hedef %</label>
+          <label className="font-body text-xs mb-1.5 flex items-center" style={{ color: C.muted }}>
+            Aylık Hedef %
+            <InfoTip text="Ulaşmayı hedeflediğiniz aylık kazanç oranı. Panel, mevcut durumunuzun bu hedefe göre ne kadar ilerlediğini gösterir." />
+          </label>
           <input type="number" step="0.01" value={settings.monthlyTargetPct} onChange={(e) => onMonthlyPctChange(e.target.value)}
             className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
             style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="3.00" />
@@ -2251,7 +2749,10 @@ function NetTargetPanel({
             style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="300000" />
         </div>
         <div>
-          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Yıllık Hedef %</label>
+          <label className="font-body text-xs mb-1.5 flex items-center" style={{ color: C.muted }}>
+            Yıllık Hedef %
+            <InfoTip text="Ulaşmayı hedeflediğiniz yıllık kazanç oranı. Panel, mevcut durumunuzun bu hedefe göre ne kadar ilerlediğini gösterir." />
+          </label>
           <input type="number" step="0.01" value={settings.yearlyTargetPct} onChange={(e) => onYearlyPctChange(e.target.value)}
             className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
             style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="36.00" />
@@ -2266,7 +2767,10 @@ function NetTargetPanel({
 
       <div className="grid sm:grid-cols-2 grid-cols-1 gap-3 mb-4">
         <div>
-          <label className="font-body text-xs block mb-1.5" style={{ color: C.muted }}>Aylık Net Kesinti (TL)</label>
+          <label className="font-body text-xs mb-1.5 flex items-center" style={{ color: C.muted }}>
+            Aylık Net Kesinti (TL)
+            <InfoTip text="Vergi, komisyon gibi getirinizden düşülecek kalemler. Hedeflerinize göre eldeki gerçek kazancı daha doğru hesaplamak için kullanılır." />
+          </label>
           <input type="number" min={0} step="0.01" value={settings.monthlyCostsTl} onChange={(e) => onSettingsChange("monthlyCostsTl", e.target.value)}
             className="font-mono sm-focus w-full rounded-lg px-3 py-2 text-sm"
             style={{ background: C.panelAlt, border: `1px solid ${C.border}`, color: C.text }} placeholder="15000" />
@@ -2287,7 +2791,7 @@ function NetTargetPanel({
             <div>Hedef: <span style={{ color: C.text }}>{money(monthlyTargetTl)} · {signedPct(monthlyTargetPct)}</span></div>
             <div>Gerçekleşen net: <span style={{ color: monthlyNetTl >= 0 ? C.green : C.red }}>{signedMoney(monthlyNetTl)} · {signedPct(monthlyNetPct)}</span></div>
             <div>Sapma: <span style={{ color: monthlyNetTl - monthlyTargetTl >= 0 ? C.green : C.red }}>{signedMoney(monthlyNetTl - monthlyTargetTl)}</span></div>
-            <div>Hedefe ilerleme: <span style={{ color: C.text }}>{monthlyProgress != null && Number.isFinite(monthlyProgress) ? `${monthlyProgress.toFixed(1)}%` : "—"}</span></div>
+            <div className="flex items-center">Hedefe ilerleme<InfoTip text="Bu ay için koyduğunuz hedefin şu ana kadar yüzde kaçına ulaştığınız. %100'e ulaşırsanız aylık hedefinizi tam karşılamışsınız demektir." />: <span style={{ color: C.text }}>{monthlyProgress != null && Number.isFinite(monthlyProgress) ? `${monthlyProgress.toFixed(1)}%` : "—"}</span></div>
             <div>Kesinti etkisi: <span style={{ color: C.text }}>{signedMoney(monthlyGrossTl - monthlyNetTl)} (Aylık kesinti: {money(monthlyCost)})</span></div>
             <div>Kalan gün: <span style={{ color: C.text }}>{daysLeftInMonth}</span> · Gerekli günlük net: <span style={{ color: C.text }}>{requiredDailyTl != null ? money(requiredDailyTl) : "—"}</span></div>
           </div>
@@ -2299,7 +2803,7 @@ function NetTargetPanel({
             <div>Hedef: <span style={{ color: C.text }}>{money(yearlyTargetTl)} · {signedPct(yearlyTargetPct)}</span></div>
             <div>Gerçekleşen net: <span style={{ color: yearlyNetTl >= 0 ? C.green : C.red }}>{signedMoney(yearlyNetTl)} · {signedPct(yearlyNetPct)}</span></div>
             <div>Sapma: <span style={{ color: yearlyNetTl - yearlyTargetTl >= 0 ? C.green : C.red }}>{signedMoney(yearlyNetTl - yearlyTargetTl)}</span></div>
-            <div>Hedefe ilerleme: <span style={{ color: C.text }}>{yearlyProgress != null && Number.isFinite(yearlyProgress) ? `${yearlyProgress.toFixed(1)}%` : "—"}</span></div>
+            <div className="flex items-center">Hedefe ilerleme<InfoTip text="Bu yıl için koyduğunuz hedefin şu ana kadar yüzde kaçına ulaştığınız." />: <span style={{ color: C.text }}>{yearlyProgress != null && Number.isFinite(yearlyProgress) ? `${yearlyProgress.toFixed(1)}%` : "—"}</span></div>
             <div>Kesinti etkisi: <span style={{ color: C.text }}>{signedMoney(yearlyGrossTl - yearlyNetTl)} (Yıllık toplam kesinti: {money(yearlyCostTotal)})</span></div>
           </div>
         </div>
@@ -2370,6 +2874,8 @@ export default function SinyalMasasi() {
   const [predictionLedger, setPredictionLedger] = useState({});
   const [signalMap, setSignalMap] = useState({});          // backend pipeline sinyalleri
   const [pipelineStatus, setPipelineStatus] = useState(null); // bayat veri uyarısı
+  const [portfolioPerf, setPortfolioPerf] = useState(null);   // Strateji vs Al-ve-Tut (sepet)
+  const [portfolioPerfRange, setPortfolioPerfRange] = useState("year");
   const [targets, setTargets] = useState({});
   const [portfolio, setPortfolio] = useState({});
   const [userId, setUserId] = useState(null);
@@ -2612,6 +3118,15 @@ export default function SinyalMasasi() {
     };
   }, [loadAll, userStateReady]);
 
+  useEffect(() => {
+    if (!userStateReady || !stocks.length) return;
+    let cancelled = false;
+    fetchPerformance(stocks.map((s) => s.symbol), portfolioPerfRange).then((p) => {
+      if (!cancelled && p) setPortfolioPerf(p);
+    });
+    return () => { cancelled = true; };
+  }, [stocks, portfolioPerfRange, userStateReady]);
+
   const addStock = (newStock) => {
     if (stocks.find((s) => s.symbol === newStock.symbol)) return;
     setStocks((prev) => [...prev, newStock]);
@@ -2799,6 +3314,9 @@ export default function SinyalMasasi() {
           onPortfolioChange={handlePortfolioChange}
           onClose={() => setDetailSymbol(null)}
           signalData={signalMap[detailSymbol] || null}
+          perf={portfolioPerf}
+          perfRange={portfolioPerfRange}
+          onPerfRangeChange={setPortfolioPerfRange}
         />
       )}
 
@@ -2842,6 +3360,13 @@ export default function SinyalMasasi() {
         </div>
 
         <TickerStrip items={items} usdTry={usdTry} />
+
+        <PortfolioPerformanceCard
+          perf={portfolioPerf}
+          range={portfolioPerfRange}
+          onRangeChange={setPortfolioPerfRange}
+          onSelectStock={setDetailSymbol}
+        />
 
         {/* Uyarı */}
         <div className="rounded-lg px-3.5 py-2.5 mb-5 flex items-start gap-2"

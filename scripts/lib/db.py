@@ -193,6 +193,70 @@ def fetch_recent_prices(symbol, days=252):
         return cur.fetchall()
 
 
+def fetch_model_performance(symbol):
+    """Döner: { model_key: {"hit_rate_pct": float|None, "sample_size": int} }"""
+    conn = get_connection()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT model_key, hit_rate_pct, sample_size
+            FROM model_performance
+            WHERE symbol = %s
+            """,
+            (symbol,),
+        )
+        rows = cur.fetchall()
+    return {
+        r["model_key"]: {
+            "hit_rate_pct": float(r["hit_rate_pct"]) if r["hit_rate_pct"] is not None else None,
+            "sample_size": int(r["sample_size"]),
+        }
+        for r in rows
+    }
+
+
+def upsert_weights_history(rows):
+    """rows: list of dicts with symbol, date, regime, weight_technical, weight_volatility, weight_rel_strength"""
+    if not rows:
+        return
+    with transaction() as conn:
+        with conn.cursor() as cur:
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO weights_history
+                  (symbol, date, regime, weight_technical, weight_volatility, weight_rel_strength)
+                VALUES %s
+                ON CONFLICT (symbol, date) DO UPDATE SET
+                  regime              = EXCLUDED.regime,
+                  weight_technical    = EXCLUDED.weight_technical,
+                  weight_volatility   = EXCLUDED.weight_volatility,
+                  weight_rel_strength = EXCLUDED.weight_rel_strength
+                """,
+                [
+                    (r["symbol"], r["date"], r["regime"],
+                     r["weight_technical"], r["weight_volatility"], r["weight_rel_strength"])
+                    for r in rows
+                ],
+            )
+
+
+def fetch_recent_model_scores(symbol, model_key, days=60):
+    conn = get_connection()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT date, score
+            FROM model_scores
+            WHERE symbol = %s AND model_key = %s
+            ORDER BY date DESC
+            LIMIT %s
+            """,
+            (symbol, model_key, days),
+        )
+        return cur.fetchall()
+
+
 def fetch_recent_signals(symbol, days=60):
     conn = get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
